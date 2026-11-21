@@ -6,6 +6,7 @@ import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.systemGestureExclusion
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -14,6 +15,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -61,6 +63,7 @@ fun RunList(
     extraRooms: List<String>,
     onAddRoom: () -> Unit,
     onDeleteRoom: (room: String) -> Unit,
+    onRenameRoom: (room: String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val byRoom = runs.withIndex().groupBy { it.value.room.orEmpty() }
@@ -117,7 +120,15 @@ fun RunList(
             val dropBg = if (dragging != null && hover == room) hoverColor else null
             item(key = "room:$room") {
                 ListItem(
-                    headlineContent = { Text(room.ifEmpty { "Unassigned" }, style = MaterialTheme.typography.titleMedium) },
+                    headlineContent = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            // weight(fill = false): a long name wraps instead of squeezing the pencil out.
+                            Text(room.ifEmpty { "Unassigned" }, Modifier.weight(1f, fill = false), style = MaterialTheme.typography.titleMedium)
+                            if (room.isNotEmpty()) IconButton(onClick = { onRenameRoom(room) }, Modifier.size(36.dp)) {
+                                Icon(Icons.Default.Edit, "Rename room $room", Modifier.size(18.dp))
+                            }
+                        }
+                    },
                     trailingContent = {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             ratio?.let { r -> Text("%.2f LF".format(items.sumOf { it.value.inches(r) } / 12), style = MaterialTheme.typography.titleMedium) }

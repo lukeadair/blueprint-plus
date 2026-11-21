@@ -137,6 +137,7 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
     var editing by remember { mutableStateOf(false) } // name + scale dialog
     var addingRoom by remember { mutableStateOf(false) }
     var deletingRoom by remember { mutableStateOf<String?>(null) }
+    var renamingRoom by remember { mutableStateOf<String?>(null) }
     var selected by remember { mutableStateOf<Run?>(null) } // tapped run, offered for deletion
 
     // Registered after the screen-level handler, so while measuring or selecting, back cancels that instead of leaving.
@@ -344,6 +345,7 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
                 extraRooms = job.rooms,
                 onAddRoom = { addingRoom = true },
                 onDeleteRoom = { deletingRoom = it },
+                onRenameRoom = { renamingRoom = it },
                 onTap = { i ->
                     // Highlight it on the plan (switching page if needed) and drop the sheet to show it.
                     val r = job.runs[i]
@@ -505,6 +507,42 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
                 ) { Text("Add") }
             },
             dismissButton = { TextButton(onClick = { addingRoom = false }) { Text("Cancel") } },
+        )
+    }
+
+    renamingRoom?.let { old ->
+        var name by remember(old) { mutableStateOf(old) }
+        val target = name.trim()
+        // Renaming onto another room merges them; use that room's exact spelling.
+        val existing = (job.rooms + job.runs.mapNotNull { it.room?.ifEmpty { null } }).distinct()
+            .firstOrNull { it != old && it.equals(target, ignoreCase = true) }
+        val reserved = target.equals("Unassigned", ignoreCase = true)
+        AlertDialog(
+            onDismissRequest = { renamingRoom = null },
+            title = { Text("Rename room") },
+            text = {
+                OutlinedTextField(
+                    value = name, onValueChange = { name = it }, singleLine = true, label = { Text("Name") },
+                    isError = reserved,
+                    supportingText = when {
+                        reserved -> ({ Text("That name is taken by Unassigned") })
+                        existing != null -> ({ Text("Its runs will join $existing") })
+                        else -> null
+                    },
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val to = existing ?: target
+                        if (selected?.room == old) selected = null
+                        update { it.renameRoom(old, to) }
+                        renamingRoom = null
+                    },
+                    enabled = target.isNotEmpty() && !reserved && target != old,
+                ) { Text(if (existing != null) "Merge" else "Rename") }
+            },
+            dismissButton = { TextButton(onClick = { renamingRoom = null }) { Text("Cancel") } },
         )
     }
 

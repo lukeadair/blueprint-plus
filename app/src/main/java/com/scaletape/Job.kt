@@ -37,6 +37,15 @@ data class Job(
     /** Rooms the user added by hand; they show in the run list even with no runs in them. */
     val rooms: List<String> = emptyList(),
 ) {
+    /**
+     * Room [old] renamed to [to] (an existing room's name merges the two). Its runs move with it, marked
+     * manual so re-picking doesn't put them back under the plan's label.
+     */
+    fun renameRoom(old: String, to: String): Job = copy(
+        runs = runs.map { if (it.room == old) it.copy(room = to, roomManual = true) else it },
+        rooms = (rooms.map { if (it == old) to else it } + to).distinct(),
+    )
+
     /** Null when the scale text doesn't parse. */
     fun totalInches(): Double? = parseScale(scale)?.let { r -> runs.sumOf { it.inches(r) } }
 }

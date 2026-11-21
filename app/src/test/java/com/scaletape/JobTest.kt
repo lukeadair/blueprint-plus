@@ -23,6 +23,22 @@ class JobTest {
         assertEquals(Offset(41f, 10f), run.midPoints()) // (82, 20) px at 144 ppi = 2x points
     }
 
+    @Test fun renameAndMergeRooms() {
+        val job = Job(
+            "i", "n",
+            runs = listOf(run.copy(room = "Bath"), run.copy(room = "Kitchen"), run.copy(room = "Bath")),
+            rooms = listOf("Bath", "Pantry"),
+        )
+        val renamed = job.renameRoom("Bath", "Master Bath")
+        assertEquals(listOf("Master Bath", "Kitchen", "Master Bath"), renamed.runs.map { it.room })
+        assertEquals(listOf(true, false, true), renamed.runs.map { it.roomManual }) // only the moved runs
+        assertEquals(listOf("Master Bath", "Pantry"), renamed.rooms)
+
+        val merged = renamed.renameRoom("Master Bath", "Kitchen")
+        assertEquals(listOf("Kitchen", "Kitchen", "Kitchen"), merged.runs.map { it.room })
+        assertEquals(listOf("Kitchen", "Pantry"), merged.rooms) // no duplicate, old name gone
+    }
+
     @Test fun totals() {
         assertEquals(96.0, Job("i", "n", "1/4\" = 1'", runs = listOf(run, run)).totalInches()!!, 1e-9)
         assertNull(Job("i", "n", "nonsense", runs = listOf(run)).totalInches())
