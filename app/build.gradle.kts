@@ -1,8 +1,16 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
 }
+
+// Upload key lives outside the repo; keystore.properties (git-ignored) points to it.
+// Without that file, release builds are simply unsigned.
+val keystoreProps: Properties? = rootProject.file("keystore.properties")
+    .takeIf { it.exists() }
+    ?.let { f -> Properties().also { p -> f.inputStream().use { p.load(it) } } }
 
 android {
     namespace = "com.scaletape"
@@ -13,7 +21,24 @@ android {
         minSdk = 26
         targetSdk = 36
         versionCode = 1
-        versionName = "0.1"
+        versionName = "1.0"
+    }
+
+    signingConfigs {
+        if (keystoreProps != null) create("release") {
+            storeFile = file(keystoreProps["storeFile"] as String)
+            storePassword = keystoreProps["storePassword"] as String
+            keyAlias = keystoreProps["keyAlias"] as String
+            keyPassword = keystoreProps["keyPassword"] as String
+        }
+    }
+
+    buildTypes {
+        release {
+            signingConfig = signingConfigs.findByName("release")
+            // shortcut: no R8 shrinking; the release runs the same code that was tested on the phone. Turn on
+            // isMinifyEnabled/isShrinkResources once a release build can be smoke-tested (emulator or spare phone).
+        }
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17

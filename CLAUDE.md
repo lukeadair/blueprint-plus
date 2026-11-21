@@ -13,7 +13,9 @@ export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
 ./gradlew testDebugUnitTest            # unit tests (fast, run after every Scale.kt change)
 ./gradlew assembleDebug                # build APK
 adb install -r app/build/outputs/apk/debug/app-debug.apk
+./gradlew assembleRelease              # signed with the upload key via git-ignored keystore.properties → app/build/outputs/apk/release/app-release.apk
 ```
+Release signing reuses the sixteenth-plus upload key (`keystore.properties` → `~/.android-keys/`). Never commit either. Bump `versionCode` and `versionName` in `app/build.gradle.kts` for each release. A release-signed APK can't install over a debug install (different signature): uninstalling the debug app deletes its saved jobs.
 
 ## Layout
 - `app/src/main/java/com/scaletape/Scale.kt`: all length/scale parsing and math. Pure Kotlin, no Android imports. Keep it that way so it stays unit-testable.
