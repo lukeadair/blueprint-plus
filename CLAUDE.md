@@ -32,7 +32,9 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 - PDF pages are rendered with the platform `PdfRenderer` (no PDF library). PDF units are points (1/72"), so a page rendered at scale `s` has `72*s` pixels per paper inch; that `ppi` is stored on each `Run`.
 - A `Run` keeps its two points in page-bitmap pixels, not feet, so changing the scale text recomputes every run.
 - Scale is a ratio of paper inches per real inch (`parseScale("1/4\" = 1'")` = 1/48). Real inches = `px / ppi / ratio`.
-- Placing a point: tap puts a crosshair `cursor` there and shows a magnifier (loupe) and a grabber handle offset from the point; dragging the grabber moves the point 1:1. "Set start" fixes `anchor`, then the same for the end makes a `Run`. Grabber/loupe placement is in `Geometry`.
+- Placing a point: tap opens a magnifier (loupe) centered on the point with crosshairs, plus a three-bar grabber on its rim. Drag the grabber to move the point 1:1; tap it to set the point (start, then the grabber turns green for the end). Tapping outside the loupe closes it; back cancels the measurement. Loupe/grabber sizes live in `Geometry`.
+- Runs: when not measuring, tapping near a run (24dp) selects it; the bottom bar offers Delete. `Run.distanceTo` does the hit test.
+- Scale is shown as text above the bottom bar; the edit dialog only saves a scale that parses.
 - Calibrate: draw a line over a known dimension, enter its real length; `calibratedScale` writes an equivalent scale back into the scale field (one source of truth).
 - Bitmaps are capped at 4096 px on the long side to bound memory. All `PdfRenderer` calls go through the single-thread `pdfThread` dispatcher because it isn't thread-safe.
 

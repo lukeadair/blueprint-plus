@@ -7,6 +7,14 @@ import org.json.JSONObject
 /** A measured run: two points in page-bitmap pixels, on a page rendered at [ppi]. */
 data class Run(val page: Int, val a: Offset, val b: Offset, val ppi: Float) {
     fun inches(ratio: Double) = realInches((b - a).getDistance().toDouble(), ppi.toDouble(), ratio)
+
+    /** Distance from [p] to this run's segment (not the infinite line), in page pixels. */
+    fun distanceTo(p: Offset): Float {
+        val ab = b - a
+        val len2 = ab.x * ab.x + ab.y * ab.y
+        val t = if (len2 == 0f) 0f else (((p.x - a.x) * ab.x + (p.y - a.y) * ab.y) / len2).coerceIn(0f, 1f)
+        return (p - (a + ab * t)).getDistance()
+    }
 }
 
 data class Job(

@@ -13,6 +13,12 @@ class JobTest {
         assertEquals(job, jobFromJson(job.toJson()))
     }
 
+    @Test fun distanceToRun() {
+        assertEquals(10f, run.distanceTo(Offset(82f, 30f)), 1e-4f) // beside the middle
+        assertEquals(10f, run.distanceTo(Offset(0f, 20f)), 1e-4f) // past the start: to the endpoint, not the line
+        assertEquals(5f, Run(0, Offset(1f, 1f), Offset(1f, 1f), 72f).distanceTo(Offset(4f, 5f)), 1e-4f) // zero-length
+    }
+
     @Test fun totals() {
         assertEquals(96.0, Job("i", "n", "1/4\" = 1'", runs = listOf(run, run)).totalInches()!!, 1e-9)
         assertNull(Job("i", "n", "nonsense", runs = listOf(run)).totalInches())

@@ -14,6 +14,7 @@ import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.gestures.drag
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.offset
@@ -26,7 +27,9 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.BottomAppBar
+import androidx.compose.material3.BottomAppBarDefaults
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
@@ -35,6 +38,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -55,6 +59,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -86,6 +91,8 @@ private const val MAX_SIDE_PX = 4096f // caps bitmap memory (~64 MB) for big she
 private const val LOUPE_MAG = 4f // loupe magnification relative to the current zoom
 private val RUN_COLOR = Color(0xFFD32F2F) // fixed, not themed: drawn over white paper
 private val CALIB_COLOR = Color(0xFF1565C0)
+private val SELECTED_COLOR = Color(0xFFFF6F00)
+private val END_GRABBER_COLOR = Color(0xFF2E7D32) // grabber turns green while placing the end point
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -115,6 +122,13 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
     var calibLine by remember { mutableStateOf<Run?>(null) }
     var confirmClear by remember { mutableStateOf(false) }
     var renaming by remember { mutableStateOf(false) }
+    var editingScale by remember { mutableStateOf(false) }
+    var selected by remember { mutableStateOf<Run?>(null) } // tapped run, offered for deletion
+
+    // Registered after the screen-level handler, so while measuring or selecting, back cancels that instead of leaving.
+    BackHandler(enabled = cursor != null || anchor != null || calibrating || selected != null) {
+        cursor = null; anchor = null; calibrating = false; selected = null
+    }
 
     DisposableEffect(Unit) {
         val r = runCatching {
@@ -139,7 +153,7 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
                 b to 72f * s
             }
         }
-        bitmap = bmp; ppi = dpi; cursor = null; anchor = null
+        bitmap = bmp; ppi = dpi; cursor = null; anchor = null; selected = null
         if (viewSize.width > 0) { // fit page to view
             zoom = minOf(viewSize.width.toFloat() / bmp.width, viewSize.height.toFloat() / bmp.height)
             pan = Offset((viewSize.width - bmp.width * zoom) / 2, (viewSize.height - bmp.height * zoom) / 2)
@@ -152,7 +166,7 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
     fun setPoint() {
         val c = cursor ?: return
         val a = anchor
-        if (a == null) { anchor = c; cursor = null; return }
+        if (a == null) { anchor = c; return } // magnifier stays open for the end point
         val run = Run(page, a, c, ppi)
         if (calibrating) { calibLine = run; calibrating = false } else update { it.copy(runs = it.runs + run) }
         anchor = null; cursor = null
@@ -180,62 +194,83 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
             )
         },
         bottomBar = {
-            BottomAppBar {
-                val c = cursor
-                val a = anchor
-                if (c != null || a != null) {
-                    TextButton(onClick = { cursor = null; anchor = null }) { Text("Cancel") }
-                    val live = if (a != null && c != null && ratio != null && !calibrating)
-                        formatFeetInches(Run(page, a, c, ppi).inches(ratio)) else null
-                    Text(
-                        when {
-                            live != null -> live
-                            c == null -> "Tap the end point"
-                            a == null -> "Drag the handle to the start"
-                            else -> "Drag the handle to the end"
-                        },
-                        Modifier.weight(1f).padding(horizontal = 8.dp),
-                        style = MaterialTheme.typography.titleMedium,
-                    )
-                    Button(onClick = { setPoint() }, enabled = c != null) { Text(if (a == null) "Set start" else "Set end") }
-                } else {
-                    Column(Modifier.weight(1f).padding(start = 16.dp)) {
+            Surface(color = BottomAppBarDefaults.containerColor) {
+                Column {
+                    Row(Modifier.padding(start = 16.dp, top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                         Text(
-                            if (total == null) "Fix the scale" else "%.2f LF".format(total / 12),
-                            style = MaterialTheme.typography.titleLarge,
+                            "Scale: ${job.scale}",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = if (ratio == null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
                         )
-                        Text(
-                            if (calibrating) "Tap the start of a known dimension"
-                            else "${job.runs.size} runs" + (total?.let { " · ${formatFeetInches(it)}" } ?: ""),
-                            style = MaterialTheme.typography.bodySmall,
-                        )
+                        IconButton(onClick = { editingScale = true }, Modifier.size(36.dp)) {
+                            Icon(Icons.Default.Edit, "Edit scale", Modifier.size(18.dp))
+                        }
                     }
-                    TextButton(
-                        onClick = { update { it.copy(runs = it.runs.dropLast(1)) } },
-                        enabled = job.runs.isNotEmpty(),
-                    ) { Text("Undo") }
-                    TextButton(onClick = { confirmClear = true }, enabled = job.runs.isNotEmpty()) { Text("Clear") }
-                    FilterChip(
-                        selected = calibrating,
-                        onClick = { calibrating = !calibrating },
-                        label = { Text("Calibrate") },
-                        enabled = bitmap != null,
-                        modifier = Modifier.padding(end = 8.dp),
-                    )
+                    BottomAppBar {
+                        val c = cursor
+                        val a = anchor
+                        if (c != null || a != null) {
+                            TextButton(onClick = { cursor = null; anchor = null }) { Text("Cancel") }
+                            val live = if (a != null && c != null && ratio != null && !calibrating)
+                                formatFeetInches(Run(page, a, c, ppi).inches(ratio)) else null
+                            Text(
+                                when {
+                                    live != null -> live
+                                    c == null -> "Tap the end point"
+                                    a == null -> "Drag to the start, tap ≡ to set"
+                                    else -> "Drag to the end, tap ≡ to set"
+                                },
+                                Modifier.weight(1f).padding(horizontal = 8.dp),
+                                style = MaterialTheme.typography.titleMedium,
+                            )
+                            Button(onClick = { setPoint() }, enabled = c != null) { Text(if (a == null) "Set start" else "Set end") }
+                        } else if (selected != null) {
+                            val sel = selected!!
+                            TextButton(onClick = { selected = null }) { Text("Done") }
+                            Text(
+                                ratio?.let { formatFeetInches(sel.inches(it)) } ?: "Selected run",
+                                Modifier.weight(1f).padding(horizontal = 8.dp),
+                                style = MaterialTheme.typography.titleMedium,
+                            )
+                            Button(
+                                onClick = { update { it.copy(runs = it.runs - sel) }; selected = null },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = MaterialTheme.colorScheme.error,
+                                    contentColor = MaterialTheme.colorScheme.onError,
+                                ),
+                                modifier = Modifier.padding(end = 8.dp),
+                            ) { Text("Delete") }
+                        } else {
+                            Column(Modifier.weight(1f).padding(start = 16.dp)) {
+                                Text(
+                                    if (total == null) "Fix the scale" else "%.2f LF".format(total / 12),
+                                    style = MaterialTheme.typography.titleLarge,
+                                )
+                                Text(
+                                    if (calibrating) "Tap the start of a known dimension"
+                                    else "${job.runs.size} runs" + (total?.let { " · ${formatFeetInches(it)}" } ?: ""),
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                            }
+                            TextButton(
+                                onClick = { update { it.copy(runs = it.runs.dropLast(1)) } },
+                                enabled = job.runs.isNotEmpty(),
+                            ) { Text("Undo") }
+                            TextButton(onClick = { confirmClear = true }, enabled = job.runs.isNotEmpty()) { Text("Clear") }
+                            FilterChip(
+                                selected = calibrating,
+                                onClick = { calibrating = !calibrating },
+                                label = { Text("Calibrate") },
+                                enabled = bitmap != null,
+                                modifier = Modifier.padding(end = 8.dp),
+                            )
+                        }
+                    }
                 }
             }
         },
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
-            OutlinedTextField(
-                value = job.scale,
-                onValueChange = { s -> update { it.copy(scale = s) } },
-                label = { Text("Scale") },
-                singleLine = true,
-                isError = ratio == null,
-                supportingText = if (ratio == null) ({ Text("e.g. 1/4\" = 1'") }) else null,
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
-            )
             message?.let { Text(it, Modifier.padding(16.dp), color = MaterialTheme.colorScheme.error) }
 
             Box(
@@ -249,8 +284,23 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
                             zoom = newZoom
                         }
                     }
-                    .pointerInput(Unit) {
-                        detectTapGestures { tap -> if (bitmap != null) cursor = (tap - pan) / zoom }
+                    .pointerInput(page) {
+                        detectTapGestures { tap ->
+                            if (bitmap == null) return@detectTapGestures
+                            val p = (tap - pan) / zoom
+                            if (cursor == null && anchor == null && !calibrating) {
+                                // Not measuring: a tap near a run selects it; a tap elsewhere clears a selection first.
+                                val hit = job.runs.filter { it.page == page }.minByOrNull { it.distanceTo(p) }
+                                if (hit != null && hit.distanceTo(p) * zoom < 24.dp.toPx()) { selected = hit; return@detectTapGestures }
+                                if (selected != null) { selected = null; return@detectTapGestures }
+                            }
+                            val c = cursor
+                            if (c != null && (tap - (c * zoom + pan)).getDistance() > Geometry(Offset.Zero, density).loupeR) {
+                                cursor = null // tap outside the magnifier closes it
+                                return@detectTapGestures
+                            }
+                            cursor = p
+                        }
                     },
             ) {
                 val bmp = bitmap
@@ -261,26 +311,30 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
                         image = remember(bmp) { bmp.asImageBitmap() },
                         runs = job.runs.filter { it.page == page },
                         ratio = ratio, zoom = zoom, pan = pan,
-                        cursor = cursor, anchor = anchor, calibLine = calibLine,
+                        cursor = cursor, anchor = anchor, calibLine = calibLine, selected = selected,
                         pointColor = if (calibrating) CALIB_COLOR else RUN_COLOR,
                     )
                     cursor?.let { c ->
-                        val g = Geometry(c * zoom + pan, viewSize, LocalDensity.current.density).grabber
+                        val g = Geometry(c * zoom + pan, LocalDensity.current.density).grabber
                         val half = with(LocalDensity.current) { 28.dp.toPx() }
                         Box(
                             Modifier
                                 .offset { IntOffset((g.x - half).roundToInt(), (g.y - half).roundToInt()) }
                                 .size(56.dp)
                                 .semantics { contentDescription = "Point handle" }
-                                .pointerInput(Unit) {
-                                    // Consume everything so the canvas doesn't pan or move the point on tap.
+                                .pointerInput(page) {
+                                    // Drag moves the point; a tap sets it. Consume everything so the canvas ignores it.
                                     awaitEachGesture {
                                         val down = awaitFirstDown()
                                         down.consume()
+                                        val start = cursor
+                                        var moved = 0f
                                         drag(down.id) { change ->
+                                            moved += change.positionChange().getDistance()
                                             cursor = cursor?.plus(change.positionChange() / zoom)
                                             change.consume()
                                         }
+                                        if (moved < viewConfiguration.touchSlop) { cursor = start; setPoint() }
                                     }
                                 },
                         )
@@ -322,6 +376,27 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
         dismissButton = { TextButton(onClick = { confirmClear = false }) { Text("Cancel") } },
     )
 
+    if (editingScale) {
+        var text by remember { mutableStateOf(job.scale) }
+        val valid = parseScale(text) != null
+        AlertDialog(
+            onDismissRequest = { editingScale = false },
+            title = { Text("Scale") },
+            text = {
+                OutlinedTextField(
+                    value = text, onValueChange = { text = it }, singleLine = true, isError = !valid,
+                    supportingText = { Text("e.g. 1/4\" = 1', 1/8\" = 1', 3/4\" = 1'") },
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { update { it.copy(scale = text.trim()) }; editingScale = false }, enabled = valid) {
+                    Text("Save")
+                }
+            },
+            dismissButton = { TextButton(onClick = { editingScale = false }) { Text("Cancel") } },
+        )
+    }
+
     if (renaming) {
         var name by remember { mutableStateOf(job.name) }
         AlertDialog(
@@ -338,18 +413,11 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
     }
 }
 
-/** Screen positions of the grabber and loupe for a point at screen position [p]. */
-private class Geometry(p: Offset, view: IntSize, density: Float) {
+/** The loupe sits directly over the point; the grabber hangs off its bottom rim. */
+private class Geometry(p: Offset, density: Float) {
     val loupeR = 64 * density
-    private val gap = 72 * density
-    private val grabberBelow = p.y + gap + 28 * density < view.height
-    val grabber = if (grabberBelow) p + Offset(0f, gap) else p - Offset(0f, gap)
-    // Loupe above the point; to the side when the grabber is above or there's no room.
-    val loupe = if (grabberBelow && p.y - gap - 2 * loupeR > 0) p - Offset(0f, gap + loupeR)
-    else Offset(
-        if (p.x > view.width / 2f) p.x - gap - loupeR else p.x + gap + loupeR,
-        p.y.coerceIn(loupeR, maxOf(loupeR, view.height - loupeR)),
-    )
+    val grabberR = 22 * density
+    val grabber = p + Offset(0f, loupeR + grabberR - 8 * density) // overlaps the rim so they read as one piece
 }
 
 @Composable
@@ -362,6 +430,7 @@ private fun PlanCanvas(
     cursor: Offset?,
     anchor: Offset?,
     calibLine: Run?,
+    selected: Run?,
     pointColor: Color,
 ) {
     val density = LocalDensity.current
@@ -380,7 +449,10 @@ private fun PlanCanvas(
         /** Draws the page and its marks in page-pixel space; [px] is one screen pixel in that space. */
         fun DrawScope.plan(px: Float) {
             drawImage(image)
-            runs.forEach { drawLine(RUN_COLOR, it.a, it.b, 3.dp.toPx() * px) }
+            runs.forEach {
+                if (it == selected) drawLine(SELECTED_COLOR, it.a, it.b, 6.dp.toPx() * px)
+                else drawLine(RUN_COLOR, it.a, it.b, 3.dp.toPx() * px)
+            }
             calibLine?.let { drawLine(CALIB_COLOR, it.a, it.b, 3.dp.toPx() * px) }
             anchor?.let { a ->
                 drawCircle(pointColor, 4.dp.toPx() * px, a)
@@ -401,24 +473,28 @@ private fun PlanCanvas(
         }
 
         val c = cursor ?: return@Canvas
-        val p = c * zoom + pan
-        val geo = Geometry(p, IntSize(size.width.toInt(), size.height.toInt()), density.density)
-        crosshair(p, 12.dp.toPx(), pointColor)
-
-        // Grabber: a handle offset from the point so the finger doesn't hide it.
-        drawLine(outline, p, geo.grabber, 1.dp.toPx())
-        drawCircle(primary, 20.dp.toPx(), geo.grabber)
-        drawCircle(onPrimary, 20.dp.toPx(), geo.grabber, style = Stroke(2.dp.toPx()))
-
-        // Loupe: the area around the point, magnified, with crosshairs.
-        val l = geo.loupe
+        val p = c * zoom + pan // the point, on screen; the loupe is centered on it
+        val geo = Geometry(p, density.density)
         val r = geo.loupeR
+
+        // Loupe: what's directly under it, magnified, with crosshairs on the point.
         val m = (zoom * LOUPE_MAG).coerceAtMost(maxOf(zoom, 12f))
-        clipPath(Path().apply { addOval(Rect(l, r)) }) {
+        clipPath(Path().apply { addOval(Rect(p, r)) }) {
             drawRect(Color.White)
-            withTransform({ translate(l.x - c.x * m, l.y - c.y * m); scale(m, m, Offset.Zero) }) { plan(1 / m) }
-            crosshair(l, r, pointColor)
+            withTransform({ translate(p.x - c.x * m, p.y - c.y * m); scale(m, m, Offset.Zero) }) { plan(1 / m) }
+            crosshair(p, r, pointColor)
         }
-        drawCircle(outline, r, l, style = Stroke(2.dp.toPx()))
+        drawCircle(outline, r, p, style = Stroke(2.dp.toPx()))
+
+        // Grabber: a drag handle (three bars) attached to the loupe, so the finger never covers the point.
+        val g = geo.grabber
+        val settingEnd = anchor != null
+        drawCircle(if (settingEnd) END_GRABBER_COLOR else primary, geo.grabberR, g)
+        drawCircle(outline, geo.grabberR, g, style = Stroke(2.dp.toPx()))
+        val bar = 8.dp.toPx()
+        for (dy in listOf(-6, 0, 6)) {
+            val y = g.y + dy.dp.toPx()
+            drawLine(if (settingEnd) Color.White else onPrimary, Offset(g.x - bar, y), Offset(g.x + bar, y), 2.5.dp.toPx(), cap = StrokeCap.Round)
+        }
     }
 }
