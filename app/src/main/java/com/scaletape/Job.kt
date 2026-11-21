@@ -4,8 +4,18 @@ import androidx.compose.ui.geometry.Offset
 import org.json.JSONArray
 import org.json.JSONObject
 
-/** A measured run: two points in page-bitmap pixels, on a page rendered at [ppi]. */
-data class Run(val page: Int, val a: Offset, val b: Offset, val ppi: Float) {
+/**
+ * A measured run: two points in page-bitmap pixels, on a page rendered at [ppi].
+ * [room]: null = not assigned yet; "" = Unassigned. [roomManual]: the user chose the room (by dragging), so the
+ * app never changes it; otherwise the app picks it from the plan's labels and re-picks when the job reopens.
+ */
+data class Run(
+    val page: Int, val a: Offset, val b: Offset, val ppi: Float,
+    val room: String? = null, val roomManual: Boolean = false,
+) {
+    /** Midpoint in PDF points (1/72"), the units room labels come in. */
+    fun midPoints(): Offset = (a + b) / 2f / ppi * 72f
+
     fun inches(ratio: Double) = realInches((b - a).getDistance().toDouble(), ppi.toDouble(), ratio)
 
     /** Distance from [p] to this run's segment (not the infinite line), in page pixels. */
@@ -36,6 +46,8 @@ fun Job.toJson(): String = JSONObject()
             .put("ax", it.a.x.toDouble()).put("ay", it.a.y.toDouble())
             .put("bx", it.b.x.toDouble()).put("by", it.b.y.toDouble())
             .put("ppi", it.ppi.toDouble())
+            .apply { if (it.room != null) put("room", it.room) }
+            .apply { if (it.roomManual) put("roomManual", true) }
     }))
     .toString()
 
@@ -55,6 +67,8 @@ fun jobFromJson(json: String): Job {
                 Offset(r.getDouble("ax").toFloat(), r.getDouble("ay").toFloat()),
                 Offset(r.getDouble("bx").toFloat(), r.getDouble("by").toFloat()),
                 r.getDouble("ppi").toFloat(),
+                if (r.has("room")) r.getString("room") else null,
+                r.optBoolean("roomManual"),
             )
         },
     )

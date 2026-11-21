@@ -18,6 +18,8 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 ## Layout
 - `app/src/main/java/com/scaletape/Scale.kt`: all length/scale parsing and math. Pure Kotlin, no Android imports. Keep it that way so it stays unit-testable.
 - `Job.kt`: `Job`/`Run` model and JSON (de)serialization. `JobStore.kt`: files on disk.
+- `Rooms.kt`: finding room labels in a page's text, walls on the rendered page, and the room for a run. Pure Kotlin, tested in `RoomsTest` and `WallFinderTest`.
+- `RunList.kt`: the sheet's run list, grouped by room (alphabetical, Unassigned last, so sections don't jump when a run moves) with LF totals. Drag a run by its ≡ handle onto another room; near the list's top/bottom edge the list auto-scrolls and the row's shift absorbs the scroll. The carried row is pinned (`LocalPinnableContainer`) so scrolling it off screen doesn't cancel the drag; the handle has `systemGestureExclusion` because it sits in the back-gesture strip. Platform drag-and-drop (`dragAndDropSource`) didn't start inside the bottom sheet, which is why this is hand-rolled.
 - `MainActivity.kt`: theme + navigation (`openId` null = home, else that job; no nav library).
 - `HomeScreen.kt`: job list, New job FAB, delete with confirm.
 - `JobScreen.kt`: top bar (name + scale line, pages, edit dialog), plan canvas with loupe and grabber, and a `BottomSheetScaffold` sheet: collapsed header (pill, total, Undo, Clear, Calibrate), pulled up shows the run list with per-run delete.
@@ -35,9 +37,16 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 - Placing a point: tap opens a magnifier (loupe) centered on the point with crosshairs, plus a three-bar grabber on its rim. Drag the grabber to move the point 1:1; tap it to set the point (start, then the grabber turns green for the end). Tapping outside the loupe closes it; back cancels the measurement. Loupe/grabber sizes live in `Geometry`.
 - Runs: when not measuring, tapping near a run (24dp) selects it; the sheet header offers Delete. Tapping a run in the sheet list selects it too, switching page or centering and zooming in on it. `Run.distanceTo` does the hit test.
 - Scale is shown under the job name; the top-bar pencil edits name and scale together and only saves a scale that parses.
-- Sheet peek height is the measured header (incl. the nav-bar inset), so the collapsed sheet hides the list. The pill is hand-drawn because `BottomSheetDefaults.DragHandle` has fixed 22dp padding. Back collapses an expanded sheet first.
+- Sheet peek height is the measured header (incl. the nav-bar inset), so the collapsed sheet hides the list. The pill is hand-drawn because `BottomSheetDefaults.DragHandle` has fixed 22dp padding. Back collapses an expanded sheet first. The run list's max height keeps the expanded sheet below the title bar.
 - Calibrate: draw a line over a known dimension, enter its real length; `calibratedScale` writes an equivalent scale back into the scale field (one source of truth).
 - Bitmaps are capped at 4096 px on the long side to bound memory. All `PdfRenderer` calls go through the single-thread `pdfThread` dispatcher because it isn't thread-safe.
+
+## Rooms
+- `PdfRenderer.Page.textContents` gives the page text with no positions; `searchText(word)` gives each match's start index and box in PDF points (top-left origin). Needs API 35, or SDK extension 13 on 11+; older devices and scanned plans get no rooms (everything is Unassigned).
+- `findRoomLabels` searches a fixed word list (`ROOM_WORDS`, longest first, plus plan abbreviations), keeps whole words only, and keeps only matches at the page's most common label height (±12%), which drops notes that mention rooms. A multi-word name on two lines comes back as one tall box, so it's sized by its first word's box. A number after a name is a room number ("BEDRM 2") unless it's a size ("KITCHEN 10'x26'1"). Add new abbreviations there with a test.
+- Picking: `pickRoom` takes the nearest label whose sightline from the run's midpoint doesn't cross a wall (else the nearest). `WallFinder` reads the rendered page: a wall is two long (48"+) parallel lines 3"-12" apart center to center, or one long solid band 3"+ thick. Every dark stretch on a sightline is checked every 2px (a wall face can touch a faucet), and samples within one stroke are merged. Sizes are real inches via the job's scale, so a wrong scale breaks wall finding (and the totals). Thresholds were tuned on two real plans (test plans A and B): countertop edge + cabinet face (~2.5") and a 36" cooktop outline beside the counter edge must not count as walls. When debugging, dump the phone's own page bitmap and labels: its render and label boxes differ from PDFBox. Tests in `WallFinderTest`.
+- `Run.room`: null = not picked yet; "" = Unassigned; otherwise the room name. `Run.roomManual` = the user dragged it there; never changed by the app. All other runs are re-picked when the job opens and when the scale changes (`refreshRooms`); new runs right after they're made.
+- Room labels for every page are read once when a job opens, on `pdfThread`; re-picking renders each page that has runs (the shown page reuses its bitmap).
 
 ## Rules
 - Any change to parsing or math gets a test in `ScaleTest`.

@@ -9,7 +9,7 @@ class JobTest {
     private val run = Run(1, Offset(10f, 20f), Offset(154f, 20f), 144f) // 1" on paper
 
     @Test fun jsonRoundTrips() {
-        val job = Job("id1", "Smith \"kitchen\"", "1/8\" = 1'", page = 2, updated = 123L, runs = listOf(run, run.copy(page = 0)))
+        val job = Job("id1", "Smith \"kitchen\"", "1/8\" = 1'", page = 2, updated = 123L, runs = listOf(run, run.copy(page = 0, room = "Kitchen"), run.copy(room = "", roomManual = true)))
         assertEquals(job, jobFromJson(job.toJson()))
     }
 
@@ -17,6 +17,10 @@ class JobTest {
         assertEquals(10f, run.distanceTo(Offset(82f, 30f)), 1e-4f) // beside the middle
         assertEquals(10f, run.distanceTo(Offset(0f, 20f)), 1e-4f) // past the start: to the endpoint, not the line
         assertEquals(5f, Run(0, Offset(1f, 1f), Offset(1f, 1f), 72f).distanceTo(Offset(4f, 5f)), 1e-4f) // zero-length
+    }
+
+    @Test fun midPointIsInPdfPoints() {
+        assertEquals(Offset(41f, 10f), run.midPoints()) // (82, 20) px at 144 ppi = 2x points
     }
 
     @Test fun totals() {

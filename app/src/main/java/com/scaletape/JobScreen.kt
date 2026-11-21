@@ -1,13 +1,15 @@
 package com.scaletape
 
+import android.annotation.SuppressLint
 import android.graphics.Bitmap
 import android.graphics.Paint
 import android.graphics.pdf.PdfRenderer
+import android.os.Build
 import android.os.ParcelFileDescriptor
+import android.os.ext.SdkExtensions
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -16,13 +18,12 @@ import androidx.compose.foundation.gestures.drag
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBars
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -34,13 +35,10 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
-import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.BottomSheetScaffold
 import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.ListItem
-import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.SheetValue
 import androidx.compose.material3.rememberBottomSheetScaffoldState
 import androidx.compose.material3.Button
@@ -85,6 +83,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.IntOffset
@@ -156,16 +155,7 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
 
     LaunchedEffect(renderer, page) {
         val r = renderer ?: return@LaunchedEffect
-        val (bmp, dpi) = withContext(pdfThread) {
-            r.openPage(page).use { p ->
-                // PDF units are points (1/72"), so render scale s gives 72*s pixels per paper inch.
-                val s = minOf(4f, MAX_SIDE_PX / maxOf(p.width, p.height))
-                val b = Bitmap.createBitmap((p.width * s).toInt(), (p.height * s).toInt(), Bitmap.Config.ARGB_8888)
-                b.eraseColor(android.graphics.Color.WHITE)
-                p.render(b, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
-                b to 72f * s
-            }
-        }
+        val (bmp, dpi) = withContext(pdfThread) { r.renderPage(page) }
         bitmap = bmp; ppi = dpi; cursor = null; anchor = null
         if (selected?.page != page) selected = null // kept when a list tap switched to its page
         if (viewSize.width > 0) { // fit page to view
@@ -174,23 +164,69 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
         }
     }
 
+    // Room labels per page, read from the PDF's text.
+    var labels by remember { mutableStateOf<Map<Int, List<RoomLabel>>>(emptyMap()) }
+    LaunchedEffect(renderer) { // after the render effect above, so the page shows first
+        val r = renderer ?: return@LaunchedEffect
+        // shortcut: reads every page up front; fine for plan sets of a few dozen sheets, make it per-page if big sets lag.
+        labels = withContext(pdfThread) { (0 until r.pageCount).associateWith { r.roomLabels(it) } }
+    }
+
+    /**
+     * Picks rooms for runs the user hasn't placed by hand (all of them, or only new ones without a room):
+     * the nearest label not behind a wall. Wall sizes depend on the scale, so this reruns when it changes.
+     */
+    suspend fun refreshRooms(onlyNew: Boolean) {
+        val r = renderer ?: return
+        val todo = job.runs.filter { !it.roomManual && (!onlyNew || it.room == null) }
+        if (todo.isEmpty() || labels.isEmpty()) return
+        val pageLabels = labels
+        val scaleRatio = parseScale(job.scale)
+        val shown = bitmap
+        val shownPage = page
+        val shownPpi = ppi
+        val picked: Map<Run, String?> = withContext(pdfThread) {
+            todo.groupBy { it.page }.flatMap { (pg, runs) ->
+                val l = pageLabels[pg].orEmpty()
+                if (l.isEmpty()) return@flatMap runs.map { it to null }
+                val (bmp, bppi) = if (pg == shownPage && shown != null) shown to shownPpi else r.renderPage(pg)
+                val walls = scaleRatio?.let { ratio -> WallFinder((bppi * ratio).toFloat()) { x, y -> bmp.isDark(x, y) } }
+                val result = runs.map { run -> run.midPoints().let { m -> run to pickRoom(l, m.x, m.y, bppi / 72f, walls) } }
+                if (bmp !== shown) bmp.recycle()
+                result
+            }.toMap()
+        }
+        // Apply to the runs as they are now (some may have been added or deleted meanwhile).
+        val updated = job.runs.map { run -> if (run in picked && picked[run] != run.room) run.copy(room = picked[run]) else run }
+        if (updated != job.runs) {
+            if (selected in picked) selected = null
+            update { it.copy(runs = updated) }
+        }
+    }
+    LaunchedEffect(labels, job.scale) { refreshRooms(onlyNew = false) }
+
     val ratio = parseScale(job.scale)
     val total = job.totalInches()
 
+    val scope = rememberCoroutineScope()
     fun setPoint() {
         val c = cursor ?: return
         val a = anchor
         if (a == null) { anchor = c; return } // magnifier stays open for the end point
         val run = Run(page, a, c, ppi)
-        if (calibrating) { calibLine = run; calibrating = false } else update { it.copy(runs = it.runs + run) }
+        if (calibrating) { calibLine = run; calibrating = false }
+        else { update { it.copy(runs = it.runs + run) }; scope.launch { refreshRooms(onlyNew = true) } }
         anchor = null; cursor = null
     }
 
     val sheet = rememberBottomSheetScaffoldState()
-    val scope = rememberCoroutineScope()
     val localDensity = LocalDensity.current
     var headerHeight by remember { mutableStateOf(0.dp) } // measured, so the peek shows exactly the header
     val navBar = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+    // Pulled all the way up, the sheet stops below the title bar instead of sliding under the status bar.
+    val screenHeight = with(localDensity) { LocalWindowInfo.current.containerSize.height.toDp() }
+    val statusBar = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+    val listMaxHeight = (screenHeight - statusBar - 64.dp - headerHeight).coerceAtLeast(0.dp)
     val sheetExpanded = sheet.bottomSheetState.currentValue == SheetValue.Expanded
     BackHandler(enabled = sheetExpanded) { scope.launch { sheet.bottomSheetState.partialExpand() } }
 
@@ -258,7 +294,8 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
                         val sel = selected!!
                         TextButton(onClick = { selected = null }) { Text("Done") }
                         Text(
-                            ratio?.let { formatFeetInches(sel.inches(it)) } ?: "Selected run",
+                            listOfNotNull(sel.room?.ifEmpty { null }, ratio?.let { formatFeetInches(sel.inches(it)) })
+                                .joinToString(" · ").ifEmpty { "Selected run" },
                             Modifier.weight(1f).padding(horizontal = 8.dp),
                             style = MaterialTheme.typography.titleMedium,
                         )
@@ -298,43 +335,43 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
                 }
             }
             HorizontalDivider()
-            // Pull the sheet up to see every run; delete any of them here.
+            // Pull the sheet up to see every run, grouped by room; delete or drag them between rooms here.
             if (job.runs.isEmpty()) {
                 Text(
                     "No runs yet",
                     Modifier.padding(16.dp).padding(bottom = navBar),
                     style = MaterialTheme.typography.bodyMedium,
                 )
-            } else LazyColumn(contentPadding = PaddingValues(bottom = navBar)) {
-                itemsIndexed(job.runs) { i, r ->
-                    ListItem(
-                        headlineContent = { Text(ratio?.let { formatFeetInches(r.inches(it)) } ?: "Scale not set") },
-                        supportingContent = { Text("Run ${i + 1}" + if (pageCount > 1) " · page ${r.page + 1}" else "") },
-                        trailingContent = {
-                            IconButton(onClick = {
-                                if (selected == r) selected = null
-                                update { it.copy(runs = it.runs.filterIndexed { j, _ -> j != i }) }
-                            }) { Icon(Icons.Default.Delete, "Delete run ${i + 1}") }
-                        },
-                        colors = ListItemDefaults.colors(
-                            containerColor = if (r == selected) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent,
-                        ),
-                        // Tap: highlight it on the plan (switching page if needed) and drop the sheet to show it.
-                        modifier = Modifier.clickable {
-                            cursor = null; anchor = null; calibrating = false
-                            selected = r
-                            if (r.page != page) update { it.copy(page = r.page) }
-                            else if (viewSize.width > 0) { // same page: center it, zooming in until it spans ~40% of the view
-                                val len = (r.b - r.a).getDistance()
-                                if (len > 0f) zoom = maxOf(zoom, minOf(20f, viewSize.width * 0.4f / len))
-                                val mid = (r.a + r.b) / 2f
-                                pan = Offset(viewSize.width / 2f, viewSize.height / 2f) - mid * zoom
-                            }
-                            scope.launch { sheet.bottomSheetState.partialExpand() }
-                        },
-                    )
-                }
-            }
+            } else RunList(
+                runs = job.runs, ratio = ratio, showPages = pageCount > 1, selected = selected, bottomPadding = navBar,
+                modifier = Modifier.heightIn(max = listMaxHeight),
+                onTap = { i ->
+                    // Highlight it on the plan (switching page if needed) and drop the sheet to show it.
+                    val r = job.runs[i]
+                    cursor = null; anchor = null; calibrating = false
+                    selected = r
+                    if (r.page != page) update { it.copy(page = r.page) }
+                    else if (viewSize.width > 0) { // same page: center it, zooming in until it spans ~40% of the view
+                        val len = (r.b - r.a).getDistance()
+                        if (len > 0f) zoom = maxOf(zoom, minOf(20f, viewSize.width * 0.4f / len))
+                        val mid = (r.a + r.b) / 2f
+                        pan = Offset(viewSize.width / 2f, viewSize.height / 2f) - mid * zoom
+                    }
+                    scope.launch { sheet.bottomSheetState.partialExpand() }
+                },
+                onDelete = { i ->
+                    if (selected == job.runs[i]) selected = null
+                    update { it.copy(runs = it.runs.filterIndexed { j, _ -> j != i }) }
+                },
+                onMove = { i, room ->
+                    val old = job.runs.getOrNull(i)
+                    if (old != null && (old.room.orEmpty() != room || !old.roomManual)) {
+                        val moved = old.copy(room = room, roomManual = true)
+                        if (selected == old) selected = moved
+                        update { it.copy(runs = it.runs.mapIndexed { j, r -> if (j == i) moved else r }) }
+                    }
+                },
+            )
         },
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) { // padding already keeps the plan above the peeking sheet
@@ -555,4 +592,44 @@ private fun PlanCanvas(
             drawLine(if (settingEnd) Color.White else onPrimary, Offset(g.x - bar, y), Offset(g.x + bar, y), 2.5.dp.toPx(), cap = StrokeCap.Round)
         }
     }
+}
+
+/** Renders [page] to a white-backed bitmap; returns it and its pixels per paper inch. Call on `pdfThread`. */
+private fun PdfRenderer.renderPage(page: Int): Pair<Bitmap, Float> = openPage(page).use { p ->
+    // PDF units are points (1/72"), so render scale s gives 72*s pixels per paper inch.
+    val s = minOf(4f, MAX_SIDE_PX / maxOf(p.width, p.height))
+    val b = Bitmap.createBitmap((p.width * s).toInt(), (p.height * s).toInt(), Bitmap.Config.ARGB_8888)
+    b.eraseColor(android.graphics.Color.WHITE)
+    p.render(b, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+    b to 72f * s
+}
+
+/** Plan ink vs paper, for wall finding. Off-page counts as paper. */
+private fun Bitmap.isDark(x: Int, y: Int): Boolean {
+    if (x !in 0 until width || y !in 0 until height) return false
+    val p = getPixel(x, y)
+    return ((p shr 16 and 255) * 3 + (p shr 8 and 255) * 6 + (p and 255)) / 10 < 160
+}
+
+// PdfRenderer text search arrived in Android 15 (API 35), and on 11+ through SDK extension 13.
+private val canReadPdfText = Build.VERSION.SDK_INT >= 35 ||
+    (Build.VERSION.SDK_INT >= 30 && SdkExtensions.getExtensionVersion(Build.VERSION_CODES.S) >= 13)
+
+/** Room labels on [page]; empty when the device can't read PDF text or the page has none (e.g. scans). */
+@SuppressLint("NewApi") // guarded by canReadPdfText
+private fun PdfRenderer.roomLabels(page: Int): List<RoomLabel> {
+    if (!canReadPdfText) return emptyList()
+    return runCatching {
+        openPage(page).use { p ->
+            findRoomLabels(p.textContents.joinToString("") { it.text }) { word ->
+                p.searchText(word).filter { it.bounds.isNotEmpty() }.map { m ->
+                    TextHit(
+                        m.textStartIndex,
+                        m.bounds.minOf { it.left }, m.bounds.minOf { it.top },
+                        m.bounds.maxOf { it.right }, m.bounds.maxOf { it.bottom },
+                    )
+                }
+            }
+        }
+    }.getOrDefault(emptyList())
 }
