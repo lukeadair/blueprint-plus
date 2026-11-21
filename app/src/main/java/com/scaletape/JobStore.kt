@@ -57,6 +57,7 @@ class JobStore(private val context: Context) {
             ?.use { c -> if (c.moveToFirst()) c.getString(0) else null }
             ?.removeSuffix(".pdf")?.removeSuffix(".PDF")
             ?: "New job"
-        return Job(id, name, updated = System.currentTimeMillis()).also { save(it) }
+        val now = System.currentTimeMillis()
+        return Job(id, name, updated = now, created = now).also { save(it) }
     }
 }

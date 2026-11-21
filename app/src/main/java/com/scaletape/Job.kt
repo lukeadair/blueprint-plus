@@ -33,6 +33,7 @@ data class Job(
     val scale: String = "1/4\" = 1'",
     val page: Int = 0,
     val updated: Long = 0,
+    val created: Long = 0,
     val runs: List<Run> = emptyList(),
     /** Rooms the user added by hand; they show in the run list even with no runs in them. */
     val rooms: List<String> = emptyList(),
@@ -51,7 +52,7 @@ data class Job(
 }
 
 fun Job.toJson(): String = JSONObject()
-    .put("id", id).put("name", name).put("scale", scale).put("page", page).put("updated", updated)
+    .put("id", id).put("name", name).put("scale", scale).put("page", page).put("updated", updated).put("created", created)
     .put("runs", JSONArray(runs.map {
         JSONObject().put("page", it.page)
             .put("ax", it.a.x.toDouble()).put("ay", it.a.y.toDouble())
@@ -73,6 +74,7 @@ fun jobFromJson(json: String): Job {
         scale = o.getString("scale"),
         page = o.optInt("page"),
         updated = o.optLong("updated"),
+        created = o.optLong("created", o.optLong("updated")), // jobs saved before this field: best guess
         runs = (0 until arr.length()).map { i ->
             val r = arr.getJSONObject(i)
             Run(
