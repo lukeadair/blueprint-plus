@@ -7,6 +7,7 @@ import android.os.ParcelFileDescriptor
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -165,7 +166,8 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
                 b to 72f * s
             }
         }
-        bitmap = bmp; ppi = dpi; cursor = null; anchor = null; selected = null
+        bitmap = bmp; ppi = dpi; cursor = null; anchor = null
+        if (selected?.page != page) selected = null // kept when a list tap switched to its page
         if (viewSize.width > 0) { // fit page to view
             zoom = minOf(viewSize.width.toFloat() / bmp.width, viewSize.height.toFloat() / bmp.height)
             pan = Offset((viewSize.width - bmp.width * zoom) / 2, (viewSize.height - bmp.height * zoom) / 2)
@@ -314,7 +316,22 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
                                 update { it.copy(runs = it.runs.filterIndexed { j, _ -> j != i }) }
                             }) { Icon(Icons.Default.Delete, "Delete run ${i + 1}") }
                         },
-                        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                        colors = ListItemDefaults.colors(
+                            containerColor = if (r == selected) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent,
+                        ),
+                        // Tap: highlight it on the plan (switching page if needed) and drop the sheet to show it.
+                        modifier = Modifier.clickable {
+                            cursor = null; anchor = null; calibrating = false
+                            selected = r
+                            if (r.page != page) update { it.copy(page = r.page) }
+                            else if (viewSize.width > 0) { // same page: center it, zooming in until it spans ~40% of the view
+                                val len = (r.b - r.a).getDistance()
+                                if (len > 0f) zoom = maxOf(zoom, minOf(20f, viewSize.width * 0.4f / len))
+                                val mid = (r.a + r.b) / 2f
+                                pan = Offset(viewSize.width / 2f, viewSize.height / 2f) - mid * zoom
+                            }
+                            scope.launch { sheet.bottomSheetState.partialExpand() }
+                        },
                     )
                 }
             }
