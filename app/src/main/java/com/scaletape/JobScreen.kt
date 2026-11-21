@@ -135,6 +135,8 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
     var calibLine by remember { mutableStateOf<Run?>(null) }
     var confirmClear by remember { mutableStateOf(false) }
     var editing by remember { mutableStateOf(false) } // name + scale dialog
+    var addingRoom by remember { mutableStateOf(false) }
+    var deletingRoom by remember { mutableStateOf<String?>(null) }
     var selected by remember { mutableStateOf<Run?>(null) } // tapped run, offered for deletion
 
     // Registered after the screen-level handler, so while measuring or selecting, back cancels that instead of leaving.
@@ -336,15 +338,12 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
             }
             HorizontalDivider()
             // Pull the sheet up to see every run, grouped by room; delete or drag them between rooms here.
-            if (job.runs.isEmpty()) {
-                Text(
-                    "No runs yet",
-                    Modifier.padding(16.dp).padding(bottom = navBar),
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-            } else RunList(
+            RunList(
                 runs = job.runs, ratio = ratio, showPages = pageCount > 1, selected = selected, bottomPadding = navBar,
                 modifier = Modifier.heightIn(max = listMaxHeight),
+                extraRooms = job.rooms,
+                onAddRoom = { addingRoom = true },
+                onDeleteRoom = { deletingRoom = it },
                 onTap = { i ->
                     // Highlight it on the plan (switching page if needed) and drop the sheet to show it.
                     val r = job.runs[i]
@@ -368,7 +367,14 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
                     if (old != null && (old.room.orEmpty() != room || !old.roomManual)) {
                         val moved = old.copy(room = room, roomManual = true)
                         if (selected == old) selected = moved
-                        update { it.copy(runs = it.runs.mapIndexed { j, r -> if (j == i) moved else r }) }
+                        // Keep the room it left in the list even if that was its last run (Unassigned excepted).
+                        val from = old.room.orEmpty()
+                        update {
+                            it.copy(
+                                runs = it.runs.mapIndexed { j, r -> if (j == i) moved else r },
+                                rooms = if (from.isEmpty() || from in it.rooms) it.rooms else it.rooms + from,
+                            )
+                        }
                     }
                 },
             )
@@ -479,6 +485,56 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
         },
         dismissButton = { TextButton(onClick = { confirmClear = false }) { Text("Cancel") } },
     )
+
+    if (addingRoom) {
+        var name by remember { mutableStateOf("") }
+        val taken = (job.rooms + job.runs.mapNotNull { it.room } + "Unassigned").any { it.equals(name.trim(), ignoreCase = true) }
+        AlertDialog(
+            onDismissRequest = { addingRoom = false },
+            title = { Text("Add room") },
+            text = {
+                OutlinedTextField(
+                    value = name, onValueChange = { name = it }, singleLine = true, label = { Text("Name") },
+                    isError = taken, supportingText = if (taken) ({ Text("That room already exists") }) else null,
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = { update { it.copy(rooms = it.rooms + name.trim()) }; addingRoom = false },
+                    enabled = name.isNotBlank() && !taken,
+                ) { Text("Add") }
+            },
+            dismissButton = { TextButton(onClick = { addingRoom = false }) { Text("Cancel") } },
+        )
+    }
+
+    deletingRoom?.let { room ->
+        val count = job.runs.count { it.room == room }
+        AlertDialog(
+            onDismissRequest = { deletingRoom = null },
+            title = { Text("Delete $room?") },
+            text = {
+                Text(
+                    if (count == 0) "The room is empty."
+                    else "Its $count run${if (count == 1) "" else "s"} will move to Unassigned. No measurements are deleted."
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    // Runs stay, marked manual so re-picking doesn't put them straight back.
+                    if (selected?.room == room) selected = null
+                    update { j ->
+                        j.copy(
+                            rooms = j.rooms - room,
+                            runs = j.runs.map { if (it.room == room) it.copy(room = "", roomManual = true) else it },
+                        )
+                    }
+                    deletingRoom = null
+                }) { Text("Delete") }
+            },
+            dismissButton = { TextButton(onClick = { deletingRoom = null }) { Text("Cancel") } },
+        )
+    }
 
     if (editing) {
         var name by remember { mutableStateOf(job.name) }

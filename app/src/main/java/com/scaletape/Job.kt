@@ -34,6 +34,8 @@ data class Job(
     val page: Int = 0,
     val updated: Long = 0,
     val runs: List<Run> = emptyList(),
+    /** Rooms the user added by hand; they show in the run list even with no runs in them. */
+    val rooms: List<String> = emptyList(),
 ) {
     /** Null when the scale text doesn't parse. */
     fun totalInches(): Double? = parseScale(scale)?.let { r -> runs.sumOf { it.inches(r) } }
@@ -49,11 +51,13 @@ fun Job.toJson(): String = JSONObject()
             .apply { if (it.room != null) put("room", it.room) }
             .apply { if (it.roomManual) put("roomManual", true) }
     }))
+    .put("rooms", JSONArray(rooms))
     .toString()
 
 fun jobFromJson(json: String): Job {
     val o = JSONObject(json)
     val arr = o.getJSONArray("runs")
+    val roomArr = o.optJSONArray("rooms")
     return Job(
         id = o.getString("id"),
         name = o.getString("name"),
@@ -71,5 +75,6 @@ fun jobFromJson(json: String): Job {
                 r.optBoolean("roomManual"),
             )
         },
+        rooms = (0 until (roomArr?.length() ?: 0)).map { roomArr!!.getString(it) },
     )
 }

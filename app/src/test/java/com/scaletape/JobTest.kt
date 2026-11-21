@@ -9,7 +9,7 @@ class JobTest {
     private val run = Run(1, Offset(10f, 20f), Offset(154f, 20f), 144f) // 1" on paper
 
     @Test fun jsonRoundTrips() {
-        val job = Job("id1", "Smith \"kitchen\"", "1/8\" = 1'", page = 2, updated = 123L, runs = listOf(run, run.copy(page = 0, room = "Kitchen"), run.copy(room = "", roomManual = true)))
+        val job = Job("id1", "Smith \"kitchen\"", "1/8\" = 1'", page = 2, updated = 123L, runs = listOf(run, run.copy(page = 0, room = "Kitchen"), run.copy(room = "", roomManual = true)), rooms = listOf("Pantry", "Office"))
         assertEquals(job, jobFromJson(job.toJson()))
     }
 

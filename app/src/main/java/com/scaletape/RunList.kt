@@ -4,12 +4,15 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.systemGestureExclusion
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material3.Icon
@@ -28,6 +31,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
@@ -42,6 +46,7 @@ import androidx.compose.ui.zIndex
 /**
  * Runs grouped by room, each room with its total. Drag a run by its ≡ handle onto another room's
  * section to move it. Rooms are alphabetical (so they don't jump when a run moves), Unassigned ("") last.
+ * [extraRooms] (added by the user) show even when empty, so runs can be dragged into them.
  */
 @Composable
 fun RunList(
@@ -53,10 +58,15 @@ fun RunList(
     onTap: (index: Int) -> Unit,
     onDelete: (index: Int) -> Unit,
     onMove: (index: Int, room: String) -> Unit,
+    extraRooms: List<String>,
+    onAddRoom: () -> Unit,
+    onDeleteRoom: (room: String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val sections = runs.withIndex().groupBy { it.value.room.orEmpty() }.entries
-        .sortedWith(compareBy({ it.key.isEmpty() }, { it.key.lowercase() }))
+    val byRoom = runs.withIndex().groupBy { it.value.room.orEmpty() }
+    val sections = (byRoom.keys + extraRooms).distinct()
+        .sortedWith(compareBy({ it.isEmpty() }, { it.lowercase() }))
+        .map { it to byRoom[it].orEmpty() }
     val listState = rememberLazyListState()
     val currentRuns by rememberUpdatedState(runs)
     val move by rememberUpdatedState(onMove)
@@ -109,7 +119,12 @@ fun RunList(
                 ListItem(
                     headlineContent = { Text(room.ifEmpty { "Unassigned" }, style = MaterialTheme.typography.titleMedium) },
                     trailingContent = {
-                        ratio?.let { r -> Text("%.2f LF".format(items.sumOf { it.value.inches(r) } / 12), style = MaterialTheme.typography.titleMedium) }
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            ratio?.let { r -> Text("%.2f LF".format(items.sumOf { it.value.inches(r) } / 12), style = MaterialTheme.typography.titleMedium) }
+                            if (room.isNotEmpty()) IconButton(onClick = { onDeleteRoom(room) }) {
+                                Icon(Icons.Default.Close, "Delete room $room")
+                            }
+                        }
                     },
                     colors = ListItemDefaults.colors(containerColor = dropBg ?: MaterialTheme.colorScheme.surfaceContainerHigh),
                 )
@@ -169,6 +184,14 @@ fun RunList(
                         .clickable { onTap(i) },
                 )
             }
+        }
+        item(key = "add-room") {
+            ListItem(
+                headlineContent = { Text("Add room") },
+                leadingContent = { Icon(Icons.Default.Add, contentDescription = null) },
+                colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                modifier = Modifier.clickable(onClick = onAddRoom),
+            )
         }
     }
 }
