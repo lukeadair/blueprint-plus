@@ -12,7 +12,16 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.gestures.drag
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -24,10 +33,15 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.BottomAppBar
-import androidx.compose.material3.BottomAppBarDefaults
+import androidx.compose.material3.BottomSheetScaffold
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.ListItem
+import androidx.compose.material3.ListItemDefaults
+import androidx.compose.material3.SheetValue
+import androidx.compose.material3.rememberBottomSheetScaffoldState
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -37,8 +51,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -49,6 +61,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -121,8 +134,7 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
     var calibrating by remember { mutableStateOf(false) }
     var calibLine by remember { mutableStateOf<Run?>(null) }
     var confirmClear by remember { mutableStateOf(false) }
-    var renaming by remember { mutableStateOf(false) }
-    var editingScale by remember { mutableStateOf(false) }
+    var editing by remember { mutableStateOf(false) } // name + scale dialog
     var selected by remember { mutableStateOf<Run?>(null) } // tapped run, offered for deletion
 
     // Registered after the screen-level handler, so while measuring or selecting, back cancels that instead of leaving.
@@ -172,10 +184,30 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
         anchor = null; cursor = null
     }
 
-    Scaffold(
+    val sheet = rememberBottomSheetScaffoldState()
+    val scope = rememberCoroutineScope()
+    val localDensity = LocalDensity.current
+    var headerHeight by remember { mutableStateOf(0.dp) } // measured, so the peek shows exactly the header
+    val navBar = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+    val sheetExpanded = sheet.bottomSheetState.currentValue == SheetValue.Expanded
+    BackHandler(enabled = sheetExpanded) { scope.launch { sheet.bottomSheetState.partialExpand() } }
+
+    BottomSheetScaffold(
+        scaffoldState = sheet,
+        sheetPeekHeight = headerHeight,
+        sheetDragHandle = null, // drawn inside the measured header instead
         topBar = {
             TopAppBar(
-                title = { Text(job.name, maxLines = 1) },
+                title = {
+                    Column {
+                        Text(job.name, maxLines = 1)
+                        Text(
+                            "Scale: ${job.scale}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (ratio == null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                },
                 navigationIcon = {
                     IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
                 },
@@ -189,88 +221,106 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
                             Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, "Next page")
                         }
                     }
-                    IconButton(onClick = { renaming = true }) { Icon(Icons.Default.Edit, "Rename job") }
+                    IconButton(onClick = { editing = true }) { Icon(Icons.Default.Edit, "Edit name and scale") }
                 },
             )
         },
-        bottomBar = {
-            Surface(color = BottomAppBarDefaults.containerColor) {
-                Column {
-                    Row(Modifier.padding(start = 16.dp, top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        sheetContent = {
+            // Header includes the gesture-bar inset so, collapsed, the run list stays hidden below it.
+            Column(Modifier.onSizeChanged { headerHeight = with(localDensity) { it.height.toDp() } }.padding(bottom = navBar)) {
+                // Same pill as BottomSheetDefaults.DragHandle, minus its 22dp padding above and below.
+                Box(
+                    Modifier.align(Alignment.CenterHorizontally).padding(top = 10.dp, bottom = 2.dp)
+                        .size(32.dp, 4.dp)
+                        .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f), CircleShape),
+                )
+                Row(Modifier.fillMaxWidth().height(64.dp), verticalAlignment = Alignment.CenterVertically) {
+                    val c = cursor
+                    val a = anchor
+                    if (c != null || a != null) {
+                        TextButton(onClick = { cursor = null; anchor = null }) { Text("Cancel") }
+                        val live = if (a != null && c != null && ratio != null && !calibrating)
+                            formatFeetInches(Run(page, a, c, ppi).inches(ratio)) else null
                         Text(
-                            "Scale: ${job.scale}",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = if (ratio == null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                            when {
+                                live != null -> live
+                                c == null -> "Tap the end point"
+                                a == null -> "Drag to the start, tap ≡ to set"
+                                else -> "Drag to the end, tap ≡ to set"
+                            },
+                            Modifier.weight(1f).padding(horizontal = 8.dp),
+                            style = MaterialTheme.typography.titleMedium,
                         )
-                        IconButton(onClick = { editingScale = true }, Modifier.size(36.dp)) {
-                            Icon(Icons.Default.Edit, "Edit scale", Modifier.size(18.dp))
-                        }
-                    }
-                    BottomAppBar {
-                        val c = cursor
-                        val a = anchor
-                        if (c != null || a != null) {
-                            TextButton(onClick = { cursor = null; anchor = null }) { Text("Cancel") }
-                            val live = if (a != null && c != null && ratio != null && !calibrating)
-                                formatFeetInches(Run(page, a, c, ppi).inches(ratio)) else null
+                        Button(onClick = { setPoint() }, enabled = c != null) { Text(if (a == null) "Set start" else "Set end") }
+                    } else if (selected != null) {
+                        val sel = selected!!
+                        TextButton(onClick = { selected = null }) { Text("Done") }
+                        Text(
+                            ratio?.let { formatFeetInches(sel.inches(it)) } ?: "Selected run",
+                            Modifier.weight(1f).padding(horizontal = 8.dp),
+                            style = MaterialTheme.typography.titleMedium,
+                        )
+                        Button(
+                            onClick = { update { it.copy(runs = it.runs - sel) }; selected = null },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.error,
+                                contentColor = MaterialTheme.colorScheme.onError,
+                            ),
+                            modifier = Modifier.padding(end = 8.dp),
+                        ) { Text("Delete") }
+                    } else {
+                        Column(Modifier.weight(1f).padding(start = 16.dp)) {
                             Text(
-                                when {
-                                    live != null -> live
-                                    c == null -> "Tap the end point"
-                                    a == null -> "Drag to the start, tap ≡ to set"
-                                    else -> "Drag to the end, tap ≡ to set"
-                                },
-                                Modifier.weight(1f).padding(horizontal = 8.dp),
-                                style = MaterialTheme.typography.titleMedium,
+                                if (total == null) "Fix the scale" else "%.2f LF".format(total / 12),
+                                style = MaterialTheme.typography.titleLarge,
                             )
-                            Button(onClick = { setPoint() }, enabled = c != null) { Text(if (a == null) "Set start" else "Set end") }
-                        } else if (selected != null) {
-                            val sel = selected!!
-                            TextButton(onClick = { selected = null }) { Text("Done") }
                             Text(
-                                ratio?.let { formatFeetInches(sel.inches(it)) } ?: "Selected run",
-                                Modifier.weight(1f).padding(horizontal = 8.dp),
-                                style = MaterialTheme.typography.titleMedium,
-                            )
-                            Button(
-                                onClick = { update { it.copy(runs = it.runs - sel) }; selected = null },
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = MaterialTheme.colorScheme.error,
-                                    contentColor = MaterialTheme.colorScheme.onError,
-                                ),
-                                modifier = Modifier.padding(end = 8.dp),
-                            ) { Text("Delete") }
-                        } else {
-                            Column(Modifier.weight(1f).padding(start = 16.dp)) {
-                                Text(
-                                    if (total == null) "Fix the scale" else "%.2f LF".format(total / 12),
-                                    style = MaterialTheme.typography.titleLarge,
-                                )
-                                Text(
-                                    if (calibrating) "Tap the start of a known dimension"
-                                    else "${job.runs.size} runs" + (total?.let { " · ${formatFeetInches(it)}" } ?: ""),
-                                    style = MaterialTheme.typography.bodySmall,
-                                )
-                            }
-                            TextButton(
-                                onClick = { update { it.copy(runs = it.runs.dropLast(1)) } },
-                                enabled = job.runs.isNotEmpty(),
-                            ) { Text("Undo") }
-                            TextButton(onClick = { confirmClear = true }, enabled = job.runs.isNotEmpty()) { Text("Clear") }
-                            FilterChip(
-                                selected = calibrating,
-                                onClick = { calibrating = !calibrating },
-                                label = { Text("Calibrate") },
-                                enabled = bitmap != null,
-                                modifier = Modifier.padding(end = 8.dp),
+                                if (calibrating) "Tap the start of a known dimension"
+                                else "${job.runs.size} runs" + (total?.let { " · ${formatFeetInches(it)}" } ?: ""),
+                                style = MaterialTheme.typography.bodySmall,
                             )
                         }
+                        TextButton(
+                            onClick = { update { it.copy(runs = it.runs.dropLast(1)) } },
+                            enabled = job.runs.isNotEmpty(),
+                        ) { Text("Undo") }
+                        TextButton(onClick = { confirmClear = true }, enabled = job.runs.isNotEmpty()) { Text("Clear") }
+                        FilterChip(
+                            selected = calibrating,
+                            onClick = { calibrating = !calibrating },
+                            label = { Text("Calibrate") },
+                            enabled = bitmap != null,
+                            modifier = Modifier.padding(end = 8.dp),
+                        )
                     }
+                }
+            }
+            HorizontalDivider()
+            // Pull the sheet up to see every run; delete any of them here.
+            if (job.runs.isEmpty()) {
+                Text(
+                    "No runs yet",
+                    Modifier.padding(16.dp).padding(bottom = navBar),
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            } else LazyColumn(contentPadding = PaddingValues(bottom = navBar)) {
+                itemsIndexed(job.runs) { i, r ->
+                    ListItem(
+                        headlineContent = { Text(ratio?.let { formatFeetInches(r.inches(it)) } ?: "Scale not set") },
+                        supportingContent = { Text("Run ${i + 1}" + if (pageCount > 1) " · page ${r.page + 1}" else "") },
+                        trailingContent = {
+                            IconButton(onClick = {
+                                if (selected == r) selected = null
+                                update { it.copy(runs = it.runs.filterIndexed { j, _ -> j != i }) }
+                            }) { Icon(Icons.Default.Delete, "Delete run ${i + 1}") }
+                        },
+                        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                    )
                 }
             }
         },
     ) { padding ->
-        Column(Modifier.fillMaxSize().padding(padding)) {
+        Column(Modifier.fillMaxSize().padding(padding)) { // padding already keeps the plan above the peeking sheet
             message?.let { Text(it, Modifier.padding(16.dp), color = MaterialTheme.colorScheme.error) }
 
             Box(
@@ -376,39 +426,30 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
         dismissButton = { TextButton(onClick = { confirmClear = false }) { Text("Cancel") } },
     )
 
-    if (editingScale) {
-        var text by remember { mutableStateOf(job.scale) }
-        val valid = parseScale(text) != null
-        AlertDialog(
-            onDismissRequest = { editingScale = false },
-            title = { Text("Scale") },
-            text = {
-                OutlinedTextField(
-                    value = text, onValueChange = { text = it }, singleLine = true, isError = !valid,
-                    supportingText = { Text("e.g. 1/4\" = 1', 1/8\" = 1', 3/4\" = 1'") },
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = { update { it.copy(scale = text.trim()) }; editingScale = false }, enabled = valid) {
-                    Text("Save")
-                }
-            },
-            dismissButton = { TextButton(onClick = { editingScale = false }) { Text("Cancel") } },
-        )
-    }
-
-    if (renaming) {
+    if (editing) {
         var name by remember { mutableStateOf(job.name) }
+        var scale by remember { mutableStateOf(job.scale) }
+        val scaleValid = parseScale(scale) != null
         AlertDialog(
-            onDismissRequest = { renaming = false },
-            title = { Text("Rename job") },
-            text = { OutlinedTextField(value = name, onValueChange = { name = it }, singleLine = true) },
-            confirmButton = {
-                TextButton(onClick = { update { it.copy(name = name.trim()) }; renaming = false }, enabled = name.isNotBlank()) {
-                    Text("Save")
+            onDismissRequest = { editing = false },
+            title = { Text("Edit job") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(value = name, onValueChange = { name = it }, singleLine = true, label = { Text("Name") })
+                    OutlinedTextField(
+                        value = scale, onValueChange = { scale = it }, singleLine = true, isError = !scaleValid,
+                        label = { Text("Scale") },
+                        supportingText = { Text("e.g. 1/4\" = 1', 1/8\" = 1', 3/4\" = 1'") },
+                    )
                 }
             },
-            dismissButton = { TextButton(onClick = { renaming = false }) { Text("Cancel") } },
+            confirmButton = {
+                TextButton(
+                    onClick = { update { it.copy(name = name.trim(), scale = scale.trim()) }; editing = false },
+                    enabled = name.isNotBlank() && scaleValid,
+                ) { Text("Save") }
+            },
+            dismissButton = { TextButton(onClick = { editing = false }) { Text("Cancel") } },
         )
     }
 }

@@ -20,7 +20,7 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 - `Job.kt`: `Job`/`Run` model and JSON (de)serialization. `JobStore.kt`: files on disk.
 - `MainActivity.kt`: theme + navigation (`openId` null = home, else that job; no nav library).
 - `HomeScreen.kt`: job list, New job FAB, delete with confirm.
-- `JobScreen.kt`: top bar (pages, rename), scale field, plan canvas with loupe and grabber, bottom bar (total, Undo, Clear, Calibrate).
+- `JobScreen.kt`: top bar (name + scale line, pages, edit dialog), plan canvas with loupe and grabber, and a `BottomSheetScaffold` sheet: collapsed header (pill, total, Undo, Clear, Calibrate), pulled up shows the run list with per-run delete.
 - `app/src/test/.../ScaleTest.kt`, `JobTest.kt`: unit tests (org.json is a test-only dep because Android's is a stub on the JVM).
 
 ## Saving
@@ -33,8 +33,9 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 - A `Run` keeps its two points in page-bitmap pixels, not feet, so changing the scale text recomputes every run.
 - Scale is a ratio of paper inches per real inch (`parseScale("1/4\" = 1'")` = 1/48). Real inches = `px / ppi / ratio`.
 - Placing a point: tap opens a magnifier (loupe) centered on the point with crosshairs, plus a three-bar grabber on its rim. Drag the grabber to move the point 1:1; tap it to set the point (start, then the grabber turns green for the end). Tapping outside the loupe closes it; back cancels the measurement. Loupe/grabber sizes live in `Geometry`.
-- Runs: when not measuring, tapping near a run (24dp) selects it; the bottom bar offers Delete. `Run.distanceTo` does the hit test.
-- Scale is shown as text above the bottom bar; the edit dialog only saves a scale that parses.
+- Runs: when not measuring, tapping near a run (24dp) selects it; the sheet header offers Delete. `Run.distanceTo` does the hit test.
+- Scale is shown under the job name; the top-bar pencil edits name and scale together and only saves a scale that parses.
+- Sheet peek height is the measured header (incl. the nav-bar inset), so the collapsed sheet hides the list. The pill is hand-drawn because `BottomSheetDefaults.DragHandle` has fixed 22dp padding. Back collapses an expanded sheet first.
 - Calibrate: draw a line over a known dimension, enter its real length; `calibratedScale` writes an equivalent scale back into the scale field (one source of truth).
 - Bitmaps are capped at 4096 px on the long side to bound memory. All `PdfRenderer` calls go through the single-thread `pdfThread` dispatcher because it isn't thread-safe.
 
