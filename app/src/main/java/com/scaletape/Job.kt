@@ -1,0 +1,53 @@
+package com.scaletape
+
+import androidx.compose.ui.geometry.Offset
+import org.json.JSONArray
+import org.json.JSONObject
+
+/** A measured run: two points in page-bitmap pixels, on a page rendered at [ppi]. */
+data class Run(val page: Int, val a: Offset, val b: Offset, val ppi: Float) {
+    fun inches(ratio: Double) = realInches((b - a).getDistance().toDouble(), ppi.toDouble(), ratio)
+}
+
+data class Job(
+    val id: String,
+    val name: String,
+    val scale: String = "1/4\" = 1'",
+    val page: Int = 0,
+    val updated: Long = 0,
+    val runs: List<Run> = emptyList(),
+) {
+    /** Null when the scale text doesn't parse. */
+    fun totalInches(): Double? = parseScale(scale)?.let { r -> runs.sumOf { it.inches(r) } }
+}
+
+fun Job.toJson(): String = JSONObject()
+    .put("id", id).put("name", name).put("scale", scale).put("page", page).put("updated", updated)
+    .put("runs", JSONArray(runs.map {
+        JSONObject().put("page", it.page)
+            .put("ax", it.a.x.toDouble()).put("ay", it.a.y.toDouble())
+            .put("bx", it.b.x.toDouble()).put("by", it.b.y.toDouble())
+            .put("ppi", it.ppi.toDouble())
+    }))
+    .toString()
+
+fun jobFromJson(json: String): Job {
+    val o = JSONObject(json)
+    val arr = o.getJSONArray("runs")
+    return Job(
+        id = o.getString("id"),
+        name = o.getString("name"),
+        scale = o.getString("scale"),
+        page = o.optInt("page"),
+        updated = o.optLong("updated"),
+        runs = (0 until arr.length()).map { i ->
+            val r = arr.getJSONObject(i)
+            Run(
+                r.getInt("page"),
+                Offset(r.getDouble("ax").toFloat(), r.getDouble("ay").toFloat()),
+                Offset(r.getDouble("bx").toFloat(), r.getDouble("by").toFloat()),
+                r.getDouble("ppi").toFloat(),
+            )
+        },
+    )
+}
