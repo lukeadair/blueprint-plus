@@ -1,6 +1,7 @@
 package com.scaletape
 
 import android.content.Context
+import android.content.pm.ApplicationInfo
 import android.graphics.pdf.PdfRenderer
 import android.net.Uri
 import android.os.ParcelFileDescriptor
@@ -12,6 +13,10 @@ import java.util.UUID
 /** Each job is `jobs/<id>.json` plus its own copy of the plan at `jobs/<id>.pdf`. */
 class JobStore(private val context: Context) {
     private val dir = File(context.filesDir, "jobs").apply { mkdirs() }
+
+    /** Debug builds only: where room seeding dumps each page (bitmap + label hits) for replaying in a JVM test. */
+    val debugDir: File? = if (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0)
+        File(context.filesDir, "debug").apply { mkdirs() } else null
 
     fun pdf(id: String) = File(dir, "$id.pdf")
     private fun json(id: String) = AtomicFile(File(dir, "$id.json"))

@@ -53,6 +53,20 @@ class WallFinderTest {
         assertFalse(walls.crosses(20f, 100f, 120f, 70f))
     }
 
+    @Test fun stubBesideAWindowIsAWall() {
+        // 400x400 at 4 px/in: a 2x6 stub (faces 22px = 5.5" apart, 60px = 15" long, capped) and the window's glass,
+        // one thin line along its middle for 240px (60"). A second stub, with no window, isn't a wall.
+        val big = Array(400) { BooleanArray(400) }
+        fun put(x0: Int, y0: Int, x1: Int, y1: Int) { for (x in x0..x1) for (y in y0..y1) big[x][y] = true }
+        put(100, 20, 101, 80); put(122, 20, 123, 80); put(100, 80, 123, 81)
+        put(111, 81, 112, 321)
+        put(250, 20, 251, 80); put(272, 20, 273, 80); put(250, 80, 273, 81)
+        val f = WallFinder(4f) { x, y -> x in 0 until 400 && y in 0 until 400 && big[x][y] }
+        assertTrue(f.crosses(60f, 50f, 160f, 50f)) // across the stub
+        assertFalse(f.crosses(60f, 200f, 160f, 200f)) // across the glass alone
+        assertFalse(f.crosses(210f, 50f, 310f, 50f)) // a stub with no window
+    }
+
     @Test fun wallFaceTouchingAFixture() {
         fill(50, 0, 52, 199); fill(64, 0, 66, 199)
         fill(40, 95, 50, 105) // a faucet handle against the first face: one dark stretch on the ray

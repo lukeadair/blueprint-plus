@@ -79,7 +79,16 @@ fun findRoomLabels(pageText: String, search: (String) -> List<TextHit>): List<Ro
     return hits
         // Tight: search boxes are whole points, so a 6pt note can measure 8 next to 10pt labels.
         .filter { abs(textHeight.getValue(it.second) - commonHeight) <= maxOf(1f, commonHeight * 0.12f) }
+        .filterNot { notACabinetRoom(it.first) }
         .map { (name, h) -> RoomLabel(name, (h.left + h.right) / 2, (h.top + h.bottom) / 2, (h.right - h.left) / 2, (h.bottom - h.top) / 2) }
+}
+
+// Closets worth a room of their own: master/his/her and walk-ins. Other closets and every porch are dropped
+// after the height filter, so their words still claim text and count toward the common label height.
+private val KEPT_CLOSET = Regex("""^(?:(?:Master|Mstr|Mst|Primary|His|Hers?|Walk-in)\b|M\.)""")
+private fun notACabinetRoom(name: String): Boolean {
+    val base = name.replace(Regex("""\s+\d+$"""), "")
+    return "Porch" in base || base.endsWith("Closet") && !KEPT_CLOSET.containsMatchIn(base)
 }
 
 /** `"GUEST ROOM"` -> `Guest Room`; `"CLOS"` -> `Closet`; `"BEDROOM"` followed by `" 2"` -> `Bedroom 2`. */
@@ -219,21 +228,28 @@ fun pickRoom(labels: List<RoomLabel>, x: Float, y: Float, pxPerPoint: Float, wal
  * Finds walls along a sightline on a rendered plan. A wall is two long parallel lines 3"-12" apart, center to
  * center (a stud wall is 3.5"; a countertop edge over its cabinet face is ~2.5"), or one long solid band at
  * least 3" thick (filled walls). "Long" means straight for 48"+, which
- * leaves out text, fixture symbols (a 36" cooktop's outline, burners, sinks) and dashed lines. Sizes are real-world inches,
+ * leaves out text, fixture symbols (a 36" cooktop's outline, burners, sinks) and dashed lines. A short pair (each
+ * face 12"+) also counts when a long line runs out of it along its middle: a wall stub beside a window, whose glass
+ * is drawn as one thin line. Sizes are real-world inches,
  * turned into pixels with [pxPerInch] (bitmap ppi x drawing scale). [isDark] reads one pixel.
  */
 class WallFinder(pxPerInch: Float, private val isDark: (x: Int, y: Int) -> Boolean) {
     private val minGap = 3 * pxPerInch
     private val maxGap = 12 * pxPerInch
     private val minLength = 48 * pxPerInch
+    private val minStub = 12 * pxPerInch
 
     /** A long line the ray crosses [t] pixels along. */
-    private class Line(val t: Float, val angle: Double, val thickness: Float, val sinToRay: Double)
+    private class Line(val t: Float, val angle: Double, val thickness: Float, val sinToRay: Double, val long: Boolean)
 
     /** Whether the segment from (x0, y0) toward (x1, y1) crosses a wall before reaching the box around (x1, y1). */
-    fun crosses(x0: Float, y0: Float, x1: Float, y1: Float, halfW: Float = 0f, halfH: Float = 0f): Boolean {
+    fun crosses(x0: Float, y0: Float, x1: Float, y1: Float, halfW: Float = 0f, halfH: Float = 0f): Boolean =
+        wallSpans(x0, y0, x1, y1, halfW, halfH).isNotEmpty()
+
+    /** Every wall the segment crosses, as its extent in pixels along the segment from (x0, y0): face to face, or the band. */
+    fun wallSpans(x0: Float, y0: Float, x1: Float, y1: Float, halfW: Float = 0f, halfH: Float = 0f): List<ClosedFloatingPointRange<Float>> {
         val len = hypot(x1 - x0, y1 - y0)
-        if (len < 1f) return false
+        if (len < 1f) return emptyList()
         val ux = (x1 - x0) / len
         val uy = (y1 - y0) / len
         val rayAngle = kotlin.math.atan2(uy.toDouble(), ux.toDouble())
@@ -251,13 +267,32 @@ class WallFinder(pxPerInch: Float, private val isDark: (x: Int, y: Int) -> Boole
         }
         if (runStart >= 0) lines += linesIn(x0, y0, ux, uy, runStart, i - 1, rayAngle)
 
-        if (lines.any { it.thickness >= minGap }) return true // filled wall
-        return lines.zipWithNext().any { (a, b) ->
+        fun Line.half() = thickness / 2 / sinToRay.toFloat() // half its stroke, measured along the ray
+        fun pair(a: Line, b: Line): Boolean {
             val parallel = abs(sin(a.angle - b.angle)) < sin(15 * PI / 180)
             // center to center, measured across the lines rather than along the ray
             val gap = (b.t - a.t) * a.sinToRay.toFloat()
-            parallel && gap in minGap..maxGap
+            return parallel && gap in minGap..maxGap
         }
+        val long = lines.filter { it.long }
+        val spans = long.filter { it.thickness >= minGap }.map { it.t - it.half()..it.t + it.half() } // filled walls
+        val pairs = long.zipWithNext().filter { (a, b) -> pair(a, b) } +
+            lines.zipWithNext().filter { (a, b) -> !(a.long && b.long) && pair(a, b) && lineAlongMiddle(x0 + ux * (a.t + b.t) / 2, y0 + uy * (a.t + b.t) / 2, a.angle) }
+        return spans + pairs.map { (a, b) -> a.t - a.half()..b.t + b.half() }
+    }
+
+    /** Whether a long line runs along [angle] through the middle of a short pair at ([mx], [my]), within 48" of it. */
+    private fun lineAlongMiddle(mx: Float, my: Float, angle: Double): Boolean {
+        val dx = cos(angle).toFloat(); val dy = sin(angle).toFloat()
+        for (sign in intArrayOf(1, -1)) for (off in intArrayOf(0, -2, 2)) {
+            var k = 0f
+            while (k <= minLength) {
+                val x = mx + sign * dx * k - dy * off; val y = my + sign * dy * k + dx * off
+                if (isDark(x.roundToInt(), y.roundToInt()) && darkSpan(x, y, dx, dy, minLength) >= minLength) return true
+                k += 2
+            }
+        }
+        return false
     }
 
     /**
@@ -279,10 +314,10 @@ class WallFinder(pxPerInch: Float, private val isDark: (x: Int, y: Int) -> Boole
             val width = group?.let { g -> g.maxOf { it.thickness } / g.first().sinToRay.toFloat() + 2 }
             if (group != null && width != null && l.t - group.last().t <= width) group += l else merged += mutableListOf(l)
         }
-        return merged.map { g -> Line(g.sumOf { it.t.toDouble() }.toFloat() / g.size, g.first().angle, g.maxOf { it.thickness }, g.first().sinToRay) }
+        return merged.map { g -> Line(g.sumOf { it.t.toDouble() }.toFloat() / g.size, g.first().angle, g.maxOf { it.thickness }, g.first().sinToRay, g.any { it.long }) }
     }
 
-    /** The long straight line through ([cx], [cy]), [t] along the ray, or null if there isn't one. */
+    /** The straight line (12"+, long at 48"+) through ([cx], [cy]), [t] along the ray, or null if there isn't one. */
     private fun lineAt(cx: Float, cy: Float, t: Float, rayAngle: Double): Line? {
         var best = 0f
         var bestAngle = 0.0
@@ -292,16 +327,17 @@ class WallFinder(pxPerInch: Float, private val isDark: (x: Int, y: Int) -> Boole
             if (length > best) { best = length; bestAngle = a }
             if (best >= minLength) break
         }
-        if (best < minLength) return null
+        if (best < minStub) return null
         val sinToRay = abs(sin(bestAngle - rayAngle))
         if (sinToRay < 0.25) return null // the ray runs along this line, not across it
         // Thickness across the line, at three spots along it: the smallest ignores places where another line crosses.
         val ax = cos(bestAngle).toFloat()
         val ay = sin(bestAngle).toFloat()
-        val thickness = listOf(0f, minLength / 4, -minLength / 4).minOf { o ->
+        val long = best >= minLength
+        val thickness = (if (long) listOf(0f, minLength / 4, -minLength / 4) else listOf(0f)).minOf { o ->
             darkSpan(cx + ax * o, cy + ay * o, -ay, ax, maxGap)
         }
-        return Line(t, bestAngle, thickness, sinToRay)
+        return Line(t, bestAngle, thickness, sinToRay, long)
     }
 
     /** How far the dark pixels continue through (cx, cy) in both directions along (dx, dy), up to [cap]. */

@@ -7,6 +7,9 @@ import android.graphics.pdf.PdfRenderer
 import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.os.ext.SdkExtensions
+import java.io.File
+import org.json.JSONArray
+import org.json.JSONObject
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -188,7 +191,7 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
     LaunchedEffect(renderer) { // after the render effect above, so the page shows first
         val r = renderer ?: return@LaunchedEffect
         // shortcut: reads every page up front; fine for plan sets of a few dozen sheets, make it per-page if big sets lag.
-        labels = withContext(pdfThread) { (0 until r.pageCount).associateWith { r.roomLabels(it) } }
+        labels = withContext(pdfThread) { (0 until r.pageCount).associateWith { r.roomLabels(it, store.debugDir) } }
     }
 
     /**
@@ -239,23 +242,28 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
         // Borders the user added before the page was seeded stay; seeds are cut back off them.
         val kept = job.boundaries.filter { it.page == pg && it.points.size <= MAX_CORNERS }
         val seeded = withContext(Dispatchers.Default) {
-            val walls = WallFinder(pxPerInch) { x, y -> bmp.isDark(x, y) }
-            val pageRect = Rect(0f, 0f, bmp.width.toFloat(), bmp.height.toFloat())
+            store.debugDir?.let { bmp.dumpTo(it, pg, ppi, ratio) }
+            val isDark = bmp.darkMask()
+            val walls = WallFinder(pxPerInch, isDark)
             val rooms = numberRepeats(
-                pageLabels.filterNot { inTable(it.x, it.y, pxPerPt) { x, y -> bmp.isDark(x, y) } }, // schedules list rooms too
+                pageLabels.filterNot { inTable(it.x, it.y, pxPerPt, isDark) }, // schedules list rooms too
                 taken = (job.boundaries.filter { it.page != pg } + kept).map { it.name }.toSet(),
             )
-            val rects = rooms.map { l ->
+            ensureActive()
+            val centers = rooms.map { Offset(it.x, it.y) * pxPerPt }
+            val filled = fillRooms(centers, bmp.width, bmp.height, pxPerInch, walls, isDark)
+            val pageRect = Rect(0f, 0f, bmp.width.toFloat(), bmp.height.toFloat())
+            val rects = centers.mapIndexed { i, c ->
                 ensureActive()
-                val c = Offset(l.x, l.y) * pxPerPt
-                c to seedRect(c, maxLen = 360 * pxPerInch, inset = 4 * pxPerInch, spread = 24 * pxPerInch, page = pageRect) { from, to ->
+                val rays = seedRect(c, maxLen = 360 * pxPerInch, inset = 4 * pxPerInch, spread = 24 * pxPerInch, page = pageRect) { from, to ->
                     walls.crosses(from.x, from.y, to.x, to.y)
                 }
+                c to agreed(filled[i], rays, c)
             }
             val keptPx = kept.map { b -> b.bounds().let { Rect(it.topLeft * pxPerPt, it.bottomRight * pxPerPt) } }
             separate(rects, minApart = 48 * pxPerInch).mapIndexedNotNull { i, r ->
                 // a label inside a kept border is that room: clipAway drops it
-                keptPx.fold(r) { acc, k -> acc?.let { clipAway(it, k, rects[i].first) } }
+                keptPx.fold(r) { acc, b -> acc?.let { clipAway(it, b, rects[i].first) } }
                     ?.let { RoomBoundary(rooms[i].name, pg, it.corners().map { c -> c / pxPerPt }) }
             }
         }
@@ -933,10 +941,16 @@ private fun PdfRenderer.renderPage(page: Int): Pair<Bitmap, Float> = openPage(pa
 }
 
 /** Plan ink vs paper, for wall finding. Off-page counts as paper. */
-private fun Bitmap.isDark(x: Int, y: Int): Boolean {
-    if (x !in 0 until width || y !in 0 until height) return false
-    val p = getPixel(x, y)
-    return ((p shr 16 and 255) * 3 + (p shr 8 and 255) * 6 + (p and 255)) / 10 < 160
+private fun Bitmap.isDark(x: Int, y: Int): Boolean = x in 0 until width && y in 0 until height && darkPixel(getPixel(x, y))
+
+private fun darkPixel(p: Int) = ((p shr 16 and 255) * 3 + (p shr 8 and 255) * 6 + (p and 255)) / 10 < 160
+
+/** [isDark] read once into memory (1 byte per pixel): a full-page wall scan would be too slow through getPixel. */
+private fun Bitmap.darkMask(): (Int, Int) -> Boolean {
+    val w = width; val h = height
+    val dark = BooleanArray(w * h); val row = IntArray(w)
+    for (y in 0 until h) { getPixels(row, 0, w, 0, y, w, 1); for (x in 0 until w) dark[y * w + x] = darkPixel(row[x]) }
+    return { x, y -> x in 0 until w && y in 0 until h && dark[y * w + x] }
 }
 
 // PdfRenderer text search arrived in Android 15 (API 35), and on 11+ through SDK extension 13.
@@ -945,19 +959,34 @@ private val canReadPdfText = Build.VERSION.SDK_INT >= 35 ||
 
 /** Room labels on [page]; empty when the device can't read PDF text or the page has none (e.g. scans). */
 @SuppressLint("NewApi") // guarded by canReadPdfText
-private fun PdfRenderer.roomLabels(page: Int): List<RoomLabel> {
+private fun PdfRenderer.roomLabels(page: Int, dumpDir: File?): List<RoomLabel> {
     if (!canReadPdfText) return emptyList()
     return runCatching {
         openPage(page).use { p ->
-            findRoomLabels(p.textContents.joinToString("") { it.text }) { word ->
+            val text = p.textContents.joinToString("") { it.text }
+            val dump = JSONObject().put("text", text) // the page text and every search, replayable in a JVM test
+            findRoomLabels(text) { word ->
                 p.searchText(word).filter { it.bounds.isNotEmpty() }.map { m ->
                     TextHit(
                         m.textStartIndex,
                         m.bounds.minOf { it.left }, m.bounds.minOf { it.top },
                         m.bounds.maxOf { it.right }, m.bounds.maxOf { it.bottom },
                     )
-                }
-            }
+                }.also { hits -> dump.put(word, JSONArray(hits.map { JSONArray(listOf(it.start, it.left, it.top, it.right, it.bottom)) })) }
+            }.also { if (dumpDir != null) runCatching { File(dumpDir, "labels-$page.json").writeText(dump.toString()) } }
         }
     }.getOrDefault(emptyList())
+}
+
+/** Debug dump of a page as seeding sees it: raw RGB bytes plus its size, resolution and scale. */
+private fun Bitmap.dumpTo(dir: File, page: Int, ppi: Float, ratio: Double) = runCatching {
+    val w = width; val row = IntArray(w); val rgb = ByteArray(w * 3)
+    File(dir, "page-$page.rgb").outputStream().buffered().use { out ->
+        for (y in 0 until height) {
+            getPixels(row, 0, w, 0, y, w, 1)
+            for (x in 0 until w) { val c = row[x]; rgb[x * 3] = (c shr 16).toByte(); rgb[x * 3 + 1] = (c shr 8).toByte(); rgb[x * 3 + 2] = c.toByte() }
+            out.write(rgb)
+        }
+    }
+    File(dir, "page-$page.json").writeText(JSONObject().put("w", w).put("h", height).put("ppi", ppi).put("ratio", ratio).toString())
 }
