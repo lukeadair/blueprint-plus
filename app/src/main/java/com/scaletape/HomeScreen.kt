@@ -3,13 +3,29 @@ package com.scaletape
 import android.content.Context
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.AnchoredDraggableState
+import androidx.compose.foundation.gestures.DraggableAnchors
+import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.anchoredDraggable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.animateTo
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
@@ -21,10 +37,9 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
+import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
@@ -39,15 +54,25 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.compositeOver
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.customActions
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.text.DateFormat
 import java.util.Date
+import kotlin.math.roundToInt
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -55,6 +80,8 @@ fun HomeScreen(store: JobStore, onOpen: (String) -> Unit) {
     var jobs by remember { mutableStateOf<List<Job>?>(null) }
     var creating by remember { mutableStateOf(false) }
     var toDelete by remember { mutableStateOf<Job?>(null) }
+    var openId by remember { mutableStateOf<String?>(null) } // the row swiped open to show Delete
+    val listState = rememberLazyListState()
     val snackbar = remember { SnackbarHostState() }
     // The chosen order survives restarts.
     val prefs = LocalContext.current.getSharedPreferences("home", Context.MODE_PRIVATE)
@@ -63,6 +90,9 @@ fun HomeScreen(store: JobStore, onOpen: (String) -> Unit) {
     val scope = rememberCoroutineScope()
 
     LaunchedEffect(Unit) { jobs = withContext(Dispatchers.IO) { store.list() } }
+    // An open row closes on scroll and once the delete dialog is dismissed.
+    LaunchedEffect(listState) { snapshotFlow { listState.isScrollInProgress }.collect { if (it) openId = null } }
+    LaunchedEffect(toDelete) { if (toDelete == null) openId = null }
 
     val pickPdf = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
@@ -123,19 +153,26 @@ fun HomeScreen(store: JobStore, onOpen: (String) -> Unit) {
                     Modifier.align(Alignment.Center).padding(32.dp),
                     style = MaterialTheme.typography.bodyLarge,
                 )
-                else -> LazyColumn(contentPadding = PaddingValues(bottom = 88.dp)) { // clear the FAB
-                    items(list, key = { it.id }) { job ->
-                        ListItem(
-                            headlineContent = { Text(job.name) },
-                            supportingContent = { Text(jobSummary(job, sort)) },
-                            trailingContent = {
-                                IconButton(onClick = { toDelete = job }) {
-                                    Icon(Icons.Default.Delete, contentDescription = "Delete ${job.name}")
-                                }
-                            },
-                            modifier = Modifier.clickable { onOpen(job.id) },
-                        )
-                        HorizontalDivider()
+                else -> LazyColumn(state = listState, contentPadding = PaddingValues(bottom = 88.dp)) { // clear the FAB
+                    itemsIndexed(list, key = { _, job -> job.id }) { i, job ->
+                        val surface = MaterialTheme.colorScheme.surface
+                        val rowColor = if (i % 2 == 0) surface
+                        else MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f).compositeOver(surface)
+                        SwipeRow(
+                            label = job.name,
+                            open = openId == job.id,
+                            onOpenChange = { open -> if (open) openId = job.id else if (openId == job.id) openId = null },
+                            onTouch = { if (openId != job.id) openId = null },
+                            onDelete = { toDelete = job },
+                            onClick = { onOpen(job.id) },
+                        ) { modifier ->
+                            ListItem(
+                                headlineContent = { Text(job.name) },
+                                supportingContent = { Text(jobSummary(job, sort)) },
+                                colors = ListItemDefaults.colors(containerColor = rowColor),
+                                modifier = modifier,
+                            )
+                        }
                     }
                 }
             }
@@ -155,6 +192,57 @@ fun HomeScreen(store: JobStore, onOpen: (String) -> Unit) {
                 }) { Text("Delete") }
             },
             dismissButton = { TextButton(onClick = { toDelete = null }) { Text("Cancel") } },
+        )
+    }
+}
+
+private enum class Swipe { Closed, Open }
+
+/** A row that swipes left to show a full-height Delete button behind it. Tapping an open row closes it. */
+@Composable
+private fun SwipeRow(
+    label: String,
+    open: Boolean,
+    onOpenChange: (Boolean) -> Unit,
+    onTouch: () -> Unit,
+    onDelete: () -> Unit,
+    onClick: () -> Unit,
+    content: @Composable (Modifier) -> Unit,
+) {
+    val width = 96.dp
+    val widthPx = with(LocalDensity.current) { width.toPx() }
+    val state = remember(widthPx) {
+        AnchoredDraggableState(Swipe.Closed, DraggableAnchors { Swipe.Closed at 0f; Swipe.Open at -widthPx })
+    }
+    val scope = rememberCoroutineScope()
+    LaunchedEffect(state) { snapshotFlow { state.settledValue }.collect { onOpenChange(it == Swipe.Open) } }
+    LaunchedEffect(open) { if (!open && state.targetValue == Swipe.Open) state.animateTo(Swipe.Closed) }
+    Box(
+        Modifier.height(IntrinsicSize.Min)
+            // See every touch first (Initial pass, consumed or not) so touching this row closes any other open one.
+            .pointerInput(Unit) { awaitEachGesture { awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial); onTouch() } }
+            .semantics {
+            customActions = listOf(CustomAccessibilityAction("Delete $label") { onDelete(); true })
+        },
+    ) {
+        Column(
+            Modifier.align(Alignment.CenterEnd).width(width).fillMaxHeight()
+                .background(MaterialTheme.colorScheme.error)
+                .clickable(onClick = onDelete),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            val onError = MaterialTheme.colorScheme.onError
+            Icon(Icons.Default.Delete, contentDescription = null, tint = onError)
+            Text("Delete", color = onError, style = MaterialTheme.typography.labelLarge)
+        }
+        content(
+            Modifier
+                .offset { IntOffset(state.requireOffset().roundToInt(), 0) }
+                .anchoredDraggable(state, Orientation.Horizontal)
+                .clickable {
+                    if (state.currentValue == Swipe.Open) scope.launch { state.animateTo(Swipe.Closed) } else onClick()
+                },
         )
     }
 }

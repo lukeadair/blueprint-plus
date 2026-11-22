@@ -42,6 +42,7 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
@@ -70,6 +71,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -372,13 +374,23 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
     // Pulled all the way up, the sheet stops below the title bar instead of sliding under the status bar.
     val screenHeight = with(localDensity) { LocalWindowInfo.current.containerSize.height.toDp() }
     val statusBar = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
-    val listMaxHeight = (screenHeight - statusBar - 64.dp - headerHeight).coerceAtLeast(0.dp)
+    val topBar = statusBar + 64.dp
+    val listMaxHeight = (screenHeight - topBar - headerHeight).coerceAtLeast(0.dp)
+    // Flatten the top corners as the sheet meets the title bar, so the plan can't show in the gaps.
+    // derivedStateOf: the offset changes every drag frame, but only a changed corner should recompose the screen.
+    val corner by remember(localDensity, topBar) {
+        derivedStateOf {
+            val y = runCatching { sheet.bottomSheetState.requireOffset() }.getOrNull() // throws before first layout
+            if (y == null) 28.dp else with(localDensity) { (y.toDp() - topBar).coerceIn(0.dp, 28.dp) }
+        }
+    }
     val sheetExpanded = sheet.bottomSheetState.currentValue == SheetValue.Expanded
     BackHandler(enabled = sheetExpanded) { scope.launch { sheet.bottomSheetState.partialExpand() } }
 
     BottomSheetScaffold(
         scaffoldState = sheet,
         sheetPeekHeight = headerHeight,
+        sheetShape = RoundedCornerShape(topStart = corner, topEnd = corner),
         sheetDragHandle = null, // drawn inside the measured header instead
         topBar = {
             TopAppBar(
