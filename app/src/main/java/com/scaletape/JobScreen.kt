@@ -12,6 +12,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.gestures.drag
@@ -36,6 +37,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Place
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.BottomSheetScaffold
 import androidx.compose.material3.HorizontalDivider
@@ -48,6 +50,8 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconButtonDefaults
+import androidx.compose.material3.IconToggleButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -58,6 +62,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -92,6 +97,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
@@ -112,9 +118,15 @@ private val END_GRABBER_COLOR = Color(0xFF2E7D32) // grabber turns green while p
 fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
     BackHandler(onBack = onBack)
     var job by remember { mutableStateOf(initial) }
+    // Room-border editing: tap a room to edit its border; `draft` is that border while its handles are dragged.
+    var editIdx by remember { mutableStateOf<Int?>(null) } // index in job.boundaries
+    var draft by remember { mutableStateOf<RoomBoundary?>(null) }
     // shortcut: saves synchronously on the main thread (small JSON, keeps writes ordered); move to a writer thread if jobs get huge.
     fun update(f: (Job) -> Job) {
-        job = f(job).copy(updated = System.currentTimeMillis())
+        val next = f(job)
+        val reseeded = next.reseedIfScaleChanged(job)
+        if (reseeded !== next) { editIdx = null; draft = null } // borders were wiped, so editIdx may point at another one
+        job = reseeded.copy(updated = System.currentTimeMillis())
         store.save(job)
     }
 
@@ -139,10 +151,14 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
     var deletingRoom by remember { mutableStateOf<String?>(null) }
     var renamingRoom by remember { mutableStateOf<String?>(null) }
     var selected by remember { mutableStateOf<Run?>(null) } // tapped run, offered for deletion
+    var editRooms by remember { mutableStateOf(false) }
+    var redetecting by remember { mutableStateOf(false) } // confirm before replacing this page's borders
+    var bitmapPage by remember { mutableIntStateOf(-1) } // the page `bitmap` shows (it lags `page` while rendering)
 
     // Registered after the screen-level handler, so while measuring or selecting, back cancels that instead of leaving.
-    BackHandler(enabled = cursor != null || anchor != null || calibrating || selected != null) {
+    BackHandler(enabled = cursor != null || anchor != null || calibrating || selected != null || editRooms) {
         cursor = null; anchor = null; calibrating = false; selected = null
+        if (editIdx != null) { editIdx = null; draft = null } else editRooms = false
     }
 
     DisposableEffect(Unit) {
@@ -159,7 +175,7 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
     LaunchedEffect(renderer, page) {
         val r = renderer ?: return@LaunchedEffect
         val (bmp, dpi) = withContext(pdfThread) { r.renderPage(page) }
-        bitmap = bmp; ppi = dpi; cursor = null; anchor = null
+        bitmap = bmp; ppi = dpi; bitmapPage = page; cursor = null; anchor = null; editIdx = null; draft = null
         if (selected?.page != page) selected = null // kept when a list tap switched to its page
         if (viewSize.width > 0) { // fit page to view
             zoom = minOf(viewSize.width.toFloat() / bmp.width, viewSize.height.toFloat() / bmp.height)
@@ -181,7 +197,7 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
      */
     suspend fun refreshRooms(onlyNew: Boolean) {
         val r = renderer ?: return
-        val todo = job.runs.filter { !it.roomManual && (!onlyNew || it.room == null) }
+        val todo = job.runs.filter { !it.roomManual && it.page !in job.seededPages && (!onlyNew || it.room == null) }
         if (todo.isEmpty() || labels.isEmpty()) return
         val pageLabels = labels
         val scaleRatio = parseScale(job.scale)
@@ -200,13 +216,56 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
             }.toMap()
         }
         // Apply to the runs as they are now (some may have been added or deleted meanwhile).
-        val updated = job.runs.map { run -> if (run in picked && picked[run] != run.room) run.copy(room = picked[run]) else run }
+        val updated = job.runs.map { run -> if (run in picked && run.page !in job.seededPages && picked[run] != run.room) run.copy(room = picked[run]) else run }
         if (updated != job.runs) {
             if (selected in picked) selected = null
             update { it.copy(runs = updated) }
         }
     }
     LaunchedEffect(labels, job.scale) { refreshRooms(onlyNew = false) }
+
+    // First time a page is shown with a valid scale (and again after Redetect, or a scale change if not edited): draw a
+    // starting border around each room label, found from the walls. Runs on this page then go by the borders.
+    LaunchedEffect(labels, bitmap, bitmapPage, job.scale, job.seededPages) {
+        val bmp = bitmap ?: return@LaunchedEffect
+        val ratio = parseScale(job.scale) ?: return@LaunchedEffect
+        val pg = bitmapPage
+        val pageLabels = labels[pg] ?: return@LaunchedEffect // labels not read yet
+        // Re-seeded: pages never seeded, and pages with borders from the old star-shaped seeder (> MAX_CORNERS corners).
+        val stale = job.boundaries.any { it.page == pg && it.points.size > MAX_CORNERS }
+        if (pg != page || (pg in job.seededPages && !stale)) return@LaunchedEffect
+        val pxPerPt = ppi / 72f
+        val pxPerInch = (ppi * ratio).toFloat()
+        // Borders the user added before the page was seeded stay; seeds are cut back off them.
+        val kept = job.boundaries.filter { it.page == pg && it.points.size <= MAX_CORNERS }
+        val seeded = withContext(Dispatchers.Default) {
+            val walls = WallFinder(pxPerInch) { x, y -> bmp.isDark(x, y) }
+            val pageRect = Rect(0f, 0f, bmp.width.toFloat(), bmp.height.toFloat())
+            val rooms = numberRepeats(
+                pageLabels.filterNot { inTable(it.x, it.y, pxPerPt) { x, y -> bmp.isDark(x, y) } }, // schedules list rooms too
+                taken = (job.boundaries.filter { it.page != pg } + kept).map { it.name }.toSet(),
+            )
+            val rects = rooms.map { l ->
+                ensureActive()
+                val c = Offset(l.x, l.y) * pxPerPt
+                c to seedRect(c, maxLen = 360 * pxPerInch, inset = 4 * pxPerInch, spread = 24 * pxPerInch, page = pageRect) { from, to ->
+                    walls.crosses(from.x, from.y, to.x, to.y)
+                }
+            }
+            val keptPx = kept.map { b -> b.bounds().let { Rect(it.topLeft * pxPerPt, it.bottomRight * pxPerPt) } }
+            separate(rects, minApart = 48 * pxPerInch).mapIndexedNotNull { i, r ->
+                // a label inside a kept border is that room: clipAway drops it
+                keptPx.fold(r) { acc, k -> acc?.let { clipAway(it, k, rects[i].first) } }
+                    ?.let { RoomBoundary(rooms[i].name, pg, it.corners().map { c -> c / pxPerPt }) }
+            }
+        }
+        if (stale) { editIdx = null; draft = null } // dropping old borders shifts the indices
+        update { j ->
+            val keep = j.boundaries.filter { it.page != pg || it.points.size <= MAX_CORNERS } // drops old star-shaped seeds
+            j.copy(boundaries = keep + seeded, seededPages = j.seededPages + pg).reassignRooms()
+        }
+        if (selected != null && selected !in job.runs) selected = null
+    }
 
     val ratio = parseScale(job.scale)
     val total = job.totalInches()
@@ -218,7 +277,7 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
         if (a == null) { anchor = c; return } // magnifier stays open for the end point
         val run = Run(page, a, c, ppi)
         if (calibrating) { calibLine = run; calibrating = false }
-        else { update { it.copy(runs = it.runs + run) }; scope.launch { refreshRooms(onlyNew = true) } }
+        else { update { it.copy(runs = it.runs + run).reassignRooms() }; scope.launch { refreshRooms(onlyNew = true) } }
         anchor = null; cursor = null
     }
 
@@ -262,6 +321,14 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
                             Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, "Next page")
                         }
                     }
+                    IconToggleButton(
+                        checked = editRooms,
+                        onCheckedChange = {
+                            editRooms = it; editIdx = null; draft = null
+                            if (it) { cursor = null; anchor = null; calibrating = false; selected = null }
+                        },
+                        colors = IconButtonDefaults.iconToggleButtonColors(checkedContainerColor = MaterialTheme.colorScheme.primaryContainer),
+                    ) { Icon(Icons.Default.Place, "Edit room borders") }
                     IconButton(onClick = { editing = true }) { Icon(Icons.Default.Edit, "Edit name and scale") }
                 },
             )
@@ -293,6 +360,30 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
                             style = MaterialTheme.typography.titleMedium,
                         )
                         Button(onClick = { setPoint() }, enabled = c != null) { Text(if (a == null) "Set start" else "Set end") }
+                    } else if (editRooms) {
+                        val idx = editIdx
+                        TextButton(onClick = { if (idx != null) { editIdx = null; draft = null } else editRooms = false }) { Text("Done") }
+                        Text(
+                            draft?.name ?: "Tap a room",
+                            Modifier.weight(1f).padding(horizontal = 8.dp),
+                            style = MaterialTheme.typography.titleMedium,
+                        )
+                        if (idx == null) {
+                            TextButton(onClick = { redetecting = true }, enabled = bitmap != null) { Text("Redetect") }
+                            TextButton(onClick = { addingRoom = true }, enabled = bitmap != null) { Text("Add room") }
+                        }
+                        else Button(
+                            onClick = {
+                                update { j -> j.copy(boundaries = j.boundaries.filterIndexed { k, _ -> k != idx }, editedPages = j.editedPages + page).reassignRooms() }
+                                editIdx = null; draft = null
+                                if (selected != null && selected !in job.runs) selected = null
+                            },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.error,
+                                contentColor = MaterialTheme.colorScheme.onError,
+                            ),
+                            modifier = Modifier.padding(end = 8.dp),
+                        ) { Text("Delete") }
                     } else if (selected != null) {
                         val sel = selected!!
                         TextButton(onClick = { selected = null }) { Text("Done") }
@@ -342,7 +433,7 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
             RunList(
                 runs = job.runs, ratio = ratio, showPages = pageCount > 1, selected = selected, bottomPadding = navBar,
                 modifier = Modifier.heightIn(max = listMaxHeight),
-                extraRooms = job.rooms,
+                extraRooms = (job.rooms + job.boundaries.map { it.name }).distinct(),
                 onAddRoom = { addingRoom = true },
                 onDeleteRoom = { deletingRoom = it },
                 onRenameRoom = { renamingRoom = it },
@@ -400,6 +491,13 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
                         detectTapGestures { tap ->
                             if (bitmap == null) return@detectTapGestures
                             val p = (tap - pan) / zoom
+                            if (editRooms) { // taps pick a room to edit instead of measuring
+                                val pt = p / (ppi / 72f)
+                                val i = job.boundaries.indices.filter { job.boundaries[it].page == page && job.boundaries[it].contains(pt) }
+                                    .minByOrNull { job.boundaries[it].area() }
+                                editIdx = i; draft = i?.let { job.boundaries[it] }
+                                return@detectTapGestures
+                            }
                             if (cursor == null && anchor == null && !calibrating) {
                                 // Not measuring: a tap near a run selects it; a tap elsewhere clears a selection first.
                                 val hit = job.runs.filter { it.page == page }.minByOrNull { it.distanceTo(p) }
@@ -425,7 +523,58 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
                         ratio = ratio, zoom = zoom, pan = pan,
                         cursor = cursor, anchor = anchor, calibLine = calibLine, selected = selected,
                         pointColor = if (calibrating) CALIB_COLOR else RUN_COLOR,
+                        rooms = job.boundaries.mapIndexed { i, b -> if (i == editIdx && draft != null) draft!! else b }.filter { it.page == page },
+                        activeRoom = draft, editRooms = editRooms, pxPerPt = ppi / 72f,
                     )
+                    if (editRooms) draft?.let { d ->
+                        val handle = with(LocalDensity.current) { 22.dp.toPx() }
+                        fun commit() {
+                            val i = editIdx ?: return
+                            val b = draft ?: return
+                            if (job.boundaries.getOrNull(i) == b) return
+                            update { j -> j.copy(boundaries = j.boundaries.mapIndexed { k, old -> if (k == i) b else old }, editedPages = j.editedPages + b.page).reassignRooms() }
+                            if (selected != null && selected !in job.runs) selected = null
+                        }
+                        val n = d.points.size
+                        val pxPerPt = ppi / 72f
+                        val pageRect = Rect(0f, 0f, (bitmap?.width ?: 0) / pxPerPt, (bitmap?.height ?: 0) / pxPerPt)
+                        /** Stays a simple shape, off the other rooms on this page. */
+                        fun fits(b: RoomBoundary) = !b.selfCrosses() &&
+                            job.boundaries.withIndex().none { (k, o) -> k != editIdx && o.page == b.page && b.overlaps(o) }
+                        if (n < MAX_CORNERS) for (i in 0 until n) { // tap the dot between two corners to add a corner there
+                            val m = (d.points[i] + d.points[(i + 1) % n]) / 2f * (ppi / 72f) * zoom + pan
+                            Box(
+                                Modifier.offset { IntOffset((m.x - handle).roundToInt(), (m.y - handle).roundToInt()) }.size(44.dp)
+                                    .semantics { contentDescription = "Add corner" }
+                                    .pointerInput(i, n) { detectTapGestures { draft = draft?.splitEdge(i); commit() } },
+                            )
+                        }
+                        for (i in 0 until n) { // drag a corner to move it; long-press to remove it
+                            val v = d.points[i] * (ppi / 72f) * zoom + pan
+                            Box(
+                                Modifier.offset { IntOffset((v.x - handle).roundToInt(), (v.y - handle).roundToInt()) }.size(44.dp)
+                                    .semantics { contentDescription = "Corner" }
+                                    .pointerInput(i, n) {
+                                        // Follows the finger; a spot that would overlap a room or leave the page is skipped,
+                                        // so the corner waits at the last good spot.
+                                        var target = Offset.Zero
+                                        detectDragGestures(
+                                            onDragStart = { target = draft?.points?.getOrNull(i) ?: Offset.Zero },
+                                            onDragEnd = { commit() }, onDragCancel = { commit() },
+                                        ) { change, drag ->
+                                            change.consume()
+                                            target += drag / zoom / (ppi / 72f)
+                                            val cur = draft ?: return@detectDragGestures
+                                            val moved = cur.copy(points = cur.points.mapIndexed { k, p -> if (k == i) target.clampTo(pageRect) else p })
+                                            if (fits(moved)) draft = moved
+                                        }
+                                    }
+                                    .pointerInput(i, n) {
+                                        detectTapGestures(onLongPress = { draft?.withoutVertex(i)?.takeIf { fits(it) }?.let { draft = it; commit() } })
+                                    },
+                            )
+                        }
+                    }
                     cursor?.let { c ->
                         val g = Geometry(c * zoom + pan, LocalDensity.current.density).grabber
                         val half = with(LocalDensity.current) { 28.dp.toPx() }
@@ -478,6 +627,19 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
         )
     }
 
+    if (redetecting) AlertDialog(
+        onDismissRequest = { redetecting = false },
+        title = { Text("Redetect rooms?") },
+        text = { Text("Replaces every room border on this page, including ones you edited or added, with new ones found from the plan.") },
+        confirmButton = {
+            TextButton(onClick = {
+                editIdx = null; draft = null; redetecting = false
+                update { it.unseed(setOf(page)) } // clean slate: the seeding effect redraws the page
+            }) { Text("Redetect") }
+        },
+        dismissButton = { TextButton(onClick = { redetecting = false }) { Text("Cancel") } },
+    )
+
     if (confirmClear) AlertDialog(
         onDismissRequest = { confirmClear = false },
         title = { Text("Clear all runs?") },
@@ -490,19 +652,46 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
 
     if (addingRoom) {
         var name by remember { mutableStateOf("") }
-        val taken = (job.rooms + job.runs.mapNotNull { it.room } + "Unassigned").any { it.equals(name.trim(), ignoreCase = true) }
+        // A new room's border: a 10' square in the middle of the view, on the page, cut back off the rooms there.
+        val newRect = remember {
+            val bmp = bitmap ?: return@remember null
+            val pxPerPt = ppi / 72f
+            val mid = (Offset(viewSize.width / 2f, viewSize.height / 2f) - pan) / zoom / pxPerPt
+            val pageRect = Rect(0f, 0f, bmp.width / pxPerPt, bmp.height / pxPerPt)
+            if (!pageRect.contains(mid)) return@remember null
+            val half = (60 * (ratio ?: (1.0 / 48)) * 72).toFloat()
+            job.boundaries.filter { it.page == page }.fold(Rect(mid, half).intersect(pageRect) as Rect?) { r, b ->
+                r?.let { clipAway(it, b.bounds(), mid) }
+            }
+        }
+        val taken = (job.rooms + job.boundaries.map { it.name } + job.runs.mapNotNull { it.room } + "Unassigned").any { it.equals(name.trim(), ignoreCase = true) }
         AlertDialog(
             onDismissRequest = { addingRoom = false },
             title = { Text("Add room") },
             text = {
                 OutlinedTextField(
                     value = name, onValueChange = { name = it }, singleLine = true, label = { Text("Name") },
-                    isError = taken, supportingText = if (taken) ({ Text("That room already exists") }) else null,
+                    isError = taken,
+                    supportingText = when {
+                        taken -> ({ Text("That room already exists") })
+                        newRect == null && bitmap != null -> ({ Text("No border: move an empty spot to the middle of the screen") })
+                        else -> null
+                    },
                 )
             },
             confirmButton = {
                 TextButton(
-                    onClick = { update { it.copy(rooms = it.rooms + name.trim()) }; addingRoom = false },
+                    onClick = {
+                        val b = newRect?.let { RoomBoundary(name.trim(), page, it.corners()) }
+                        update {
+                            it.copy(
+                                rooms = it.rooms + name.trim(), boundaries = it.boundaries + listOfNotNull(b),
+                                editedPages = if (b != null) it.editedPages + page else it.editedPages,
+                            ).reassignRooms()
+                        }
+                        if (b != null) { editRooms = true; editIdx = job.boundaries.lastIndex; draft = b }
+                        addingRoom = false
+                    },
                     enabled = name.isNotBlank() && !taken,
                 ) { Text("Add") }
             },
@@ -514,7 +703,7 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
         var name by remember(old) { mutableStateOf(old) }
         val target = name.trim()
         // Renaming onto another room merges them; use that room's exact spelling.
-        val existing = (job.rooms + job.runs.mapNotNull { it.room?.ifEmpty { null } }).distinct()
+        val existing = (job.rooms + job.boundaries.map { it.name } + job.runs.mapNotNull { it.room?.ifEmpty { null } }).distinct()
             .firstOrNull { it != old && it.equals(target, ignoreCase = true) }
         val reserved = target.equals("Unassigned", ignoreCase = true)
         AlertDialog(
@@ -536,6 +725,7 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
                     onClick = {
                         val to = existing ?: target
                         if (selected?.room == old) selected = null
+                        editIdx = null; draft = null
                         update { it.renameRoom(old, to) }
                         renamingRoom = null
                     },
@@ -561,9 +751,12 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
                 TextButton(onClick = {
                     // Runs stay, marked manual so re-picking doesn't put them straight back.
                     if (selected?.room == room) selected = null
+                    editIdx = null; draft = null
                     update { j ->
                         j.copy(
                             rooms = j.rooms - room,
+                            boundaries = j.boundaries.filter { it.name != room },
+                            editedPages = j.editedPages + j.boundaries.filter { it.name == room }.map { it.page },
                             runs = j.runs.map { if (it.room == room) it.copy(room = "", roomManual = true) else it },
                         )
                     }
@@ -602,6 +795,11 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
     }
 }
 
+private val ROOM_COLORS = listOf(0xFF1E88E5, 0xFF43A047, 0xFF8E24AA, 0xFFF4511E, 0xFF00897B, 0xFFC0CA33, 0xFFD81B60, 0xFF6D4C41)
+
+/** A room's color, fixed per name (drawn over white paper, so not themed). */
+private fun roomColor(name: String) = Color(ROOM_COLORS[(name.hashCode() and Int.MAX_VALUE) % ROOM_COLORS.size])
+
 /** The loupe sits directly over the point; the grabber hangs off its bottom rim. */
 private class Geometry(p: Offset, density: Float) {
     val loupeR = 64 * density
@@ -621,6 +819,10 @@ private fun PlanCanvas(
     calibLine: Run?,
     selected: Run?,
     pointColor: Color,
+    rooms: List<RoomBoundary>,
+    activeRoom: RoomBoundary?,
+    editRooms: Boolean,
+    pxPerPt: Float,
 ) {
     val density = LocalDensity.current
     val labelPaint = remember(density) {
@@ -633,11 +835,27 @@ private fun PlanCanvas(
     val primary = MaterialTheme.colorScheme.primary
     val onPrimary = MaterialTheme.colorScheme.onPrimary
     val dash = remember { PathEffect.dashPathEffect(floatArrayOf(20f, 12f)) }
+    val roomPaint = remember(density) {
+        Paint().apply {
+            color = 0xFF263238.toInt(); isAntiAlias = true; isFakeBoldText = true; textAlign = Paint.Align.CENTER
+            textSize = with(density) { 12.sp.toPx() }
+        }
+    }
 
     Canvas(Modifier.fillMaxSize()) {
         /** Draws the page and its marks in page-pixel space; [px] is one screen pixel in that space. */
         fun DrawScope.plan(px: Float) {
             drawImage(image)
+            rooms.forEach { r ->
+                val path = Path().apply {
+                    r.points.forEachIndexed { i, pt -> (pt * pxPerPt).let { if (i == 0) moveTo(it.x, it.y) else lineTo(it.x, it.y) } }
+                    close()
+                }
+                val c = roomColor(r.name)
+                val active = r === activeRoom
+                drawPath(path, c.copy(alpha = if (active) 0.25f else if (editRooms) 0.16f else 0.07f))
+                drawPath(path, c, style = Stroke((if (active) 3.dp else 1.5.dp).toPx() * px))
+            }
             runs.forEach {
                 if (it == selected) drawLine(SELECTED_COLOR, it.a, it.b, 6.dp.toPx() * px)
                 else drawLine(RUN_COLOR, it.a, it.b, 3.dp.toPx() * px)
@@ -659,6 +877,22 @@ private fun PlanCanvas(
         if (ratio != null) runs.forEach { r ->
             val mid = (r.a + r.b) / 2f * zoom + pan
             drawContext.canvas.nativeCanvas.drawText(formatFeetInches(r.inches(ratio)), mid.x, mid.y - 4.dp.toPx(), labelPaint)
+        }
+
+        rooms.forEach { r -> // names sit at the middle of each border, over the plan
+            val mid = r.points.reduce { a, b -> a + b } / r.points.size.toFloat() * pxPerPt * zoom + pan
+            drawContext.canvas.nativeCanvas.drawText(r.name, mid.x, mid.y, roomPaint)
+        }
+        if (editRooms) activeRoom?.let { r -> // corner handles; the small dots between them add a corner
+            val color = roomColor(r.name)
+            r.points.forEachIndexed { i, v ->
+                val next = r.points[(i + 1) % r.points.size]
+                if (r.points.size < MAX_CORNERS) drawCircle(color, 4.dp.toPx(), (v + next) / 2f * pxPerPt * zoom + pan)
+                (v * pxPerPt * zoom + pan).let {
+                    drawCircle(Color.White, 9.dp.toPx(), it)
+                    drawCircle(color, 9.dp.toPx(), it, style = Stroke(3.dp.toPx()))
+                }
+            }
         }
 
         val c = cursor ?: return@Canvas

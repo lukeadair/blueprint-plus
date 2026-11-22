@@ -37,6 +37,12 @@ data class Job(
     val runs: List<Run> = emptyList(),
     /** Rooms the user added by hand; they show in the run list even with no runs in them. */
     val rooms: List<String> = emptyList(),
+    /** Room borders. Runs on a page in [seededPages] get their room from these (see [reassignRooms]). */
+    val boundaries: List<RoomBoundary> = emptyList(),
+    /** Pages whose borders were auto-drawn from the room labels; redone only by Redetect or, if not edited, a new scale. */
+    val seededPages: Set<Int> = emptySet(),
+    /** Pages whose borders the user changed (moved, added, deleted); a scale change leaves these alone. */
+    val editedPages: Set<Int> = emptySet(),
 ) {
     /**
      * Room [old] renamed to [to] (an existing room's name merges the two). Its runs move with it, marked
@@ -45,6 +51,8 @@ data class Job(
     fun renameRoom(old: String, to: String): Job = copy(
         runs = runs.map { if (it.room == old) it.copy(room = to, roomManual = true) else it },
         rooms = (rooms.map { if (it == old) to else it } + to).distinct(),
+        boundaries = boundaries.map { if (it.name == old) it.copy(name = to) else it },
+        editedPages = editedPages + boundaries.filter { it.name == old }.map { it.page }, // a scale change must not undo it
     )
 
     /** Null when the scale text doesn't parse. */
@@ -62,12 +70,21 @@ fun Job.toJson(): String = JSONObject()
             .apply { if (it.roomManual) put("roomManual", true) }
     }))
     .put("rooms", JSONArray(rooms))
+    .put("boundaries", JSONArray(boundaries.map { b ->
+        JSONObject().put("name", b.name).put("page", b.page)
+            .put("pts", JSONArray(b.points.flatMap { listOf(it.x.toDouble(), it.y.toDouble()) }))
+    }))
+    .put("seededPages", JSONArray(seededPages.sorted()))
+    .put("editedPages", JSONArray(editedPages.sorted()))
     .toString()
 
 fun jobFromJson(json: String): Job {
     val o = JSONObject(json)
     val arr = o.getJSONArray("runs")
     val roomArr = o.optJSONArray("rooms")
+    val boundArr = o.optJSONArray("boundaries")
+    val seededArr = o.optJSONArray("seededPages")
+    val editedArr = o.optJSONArray("editedPages")
     return Job(
         id = o.getString("id"),
         name = o.getString("name"),
@@ -87,5 +104,15 @@ fun jobFromJson(json: String): Job {
             )
         },
         rooms = (0 until (roomArr?.length() ?: 0)).map { roomArr!!.getString(it) },
+        boundaries = (0 until (boundArr?.length() ?: 0)).map { i ->
+            val b = boundArr!!.getJSONObject(i)
+            val pts = b.getJSONArray("pts")
+            RoomBoundary(
+                b.getString("name"), b.getInt("page"),
+                (0 until pts.length() / 2).map { Offset(pts.getDouble(2 * it).toFloat(), pts.getDouble(2 * it + 1).toFloat()) },
+            )
+        },
+        seededPages = (0 until (seededArr?.length() ?: 0)).map { seededArr!!.getInt(it) }.toSet(),
+        editedPages = (0 until (editedArr?.length() ?: 0)).map { editedArr!!.getInt(it) }.toSet(),
     )
 }

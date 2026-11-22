@@ -60,11 +60,13 @@ fun findRoomLabels(pageText: String, search: (String) -> List<TextHit>): List<Ro
             val indexed = h.start >= 0 && end <= upper.length && upper.regionMatches(h.start, word, 0, word.length)
             if (indexed && h.start > 0 && upper[h.start - 1].isLetter()) continue // "...BATH" inside a word
             if (indexed && end < upper.length && upper[end].isLetter()) continue // "CLOS" in "CLOSED"
-            if (hits.any { (_, o) -> o.left < h.right && h.left < o.right && o.top < h.bottom && h.top < o.bottom }) continue
+            // Text already taken ("BATH" in "MASTER BATH", or the same name found twice): another hit covers half its
+            // box. A tiny tag clipping a label ("PANTRY 1", "MASTER CLOSET 1") doesn't; the height filter drops those.
+            if (hits.any { (_, o) -> overlapArea(o, h) >= 0.5f * (h.right - h.left) * (h.bottom - h.top) }) continue
             // A name pieced together from its words (start -1) reads its room number after its last word.
             val after = if (indexed || (h.start < 0 && end in 0..upper.length)) upper.substring(end) else ""
             if (word in NEEDS_NUMBER && !NUMBER_AFTER.containsMatchIn(after)) continue
-            hits += displayName(word, after) to h
+            hits += (if (indexed) qualifier(upper, h, search)?.let { "$it " } ?: "" else "") + displayName(word, after) to h
             // A name set on two lines ("FRONT" over "PORCH") comes back as one box twice as tall as its text:
             // size it by its first word's own box instead.
             textHeight[h] = if (' ' !in word) h.bottom - h.top else search(word.substringBefore(' '))
@@ -112,6 +114,77 @@ private fun placedTogether(word: String, upper: String, search: (String) -> List
         }
         box to (last.start + parts.last().length)
     }
+}
+
+private fun overlapArea(a: TextHit, b: TextHit) =
+    maxOf(0f, minOf(a.right, b.right) - maxOf(a.left, b.left)) * maxOf(0f, minOf(a.bottom, b.bottom) - maxOf(a.top, b.top))
+
+private val QUALIFIER = Regex("""[A-Z][A-Z']{0,7}\.?""")
+private val NOT_QUALIFIERS = setOf("A", "AT", "AND", "FOR", "IN", "OF", "ON", "THE", "TO", "NEW", "EXIST", "EXIST.", "EXISTING")
+
+/**
+ * The word in front of a room word on the same line, so "GIRLS BATH" and "M. BATH" stay apart from plain "BATH":
+ * `Girls`, `M.`. Null when there's none, it's another room word ("HALL BATH" stays two rooms), or a filler word.
+ */
+private fun qualifier(upper: String, h: TextHit, search: (String) -> List<TextHit>): String? {
+    if (h.start < 2 || upper[h.start - 1] != ' ') return null
+    var from = h.start - 1
+    while (from > 0 && (upper[from - 1].isLetter() || upper[from - 1] in ".'")) from--
+    if (from > 0 && !upper[from - 1].isWhitespace()) return null // "LNDY/MUD PDR": MUD belongs to LNDY/MUD
+    val w = upper.substring(from, h.start - 1).takeIf { QUALIFIER.matches(it) } ?: return null
+    if (w in NOT_QUALIFIERS || ROOM_WORDS.any { it == w || it.endsWith(" $w") }) return null
+    val height = h.bottom - h.top
+    // On the page right before the room word, on its line (the text order alone can join unrelated lines).
+    search(w).firstOrNull { it.start == h.start - w.length - 1 } ?.takeIf {
+        abs(it.top - h.top) <= height / 2 && it.right <= h.left + 1 && h.left - it.right <= 2 * (it.right - it.left) / w.length // a space or two
+    } ?: return null
+    return w.lowercase().replaceFirstChar(Char::uppercase)
+}
+
+/**
+ * [labels] with repeated names numbered in reading order ("Storage", "Storage 2"), so two rooms with one name
+ * don't merge into one in the run list. Names in [taken] (rooms on other pages) count as used.
+ */
+fun numberRepeats(labels: List<RoomLabel>, taken: Set<String>): List<RoomLabel> {
+    val used = taken.toMutableSet()
+    val onPage = labels.map { it.name }.toSet()
+    val out = labels.toMutableList()
+    for (i in labels.indices.sortedWith(compareBy({ labels[it].y }, { labels[it].x }))) {
+        val name = labels[i].name
+        // a number already used by a label on this page ("Bedroom 2") is skipped too
+        val n = generateSequence(1) { it + 1 }.map { if (it == 1) name else "$name $it" }
+            .first { it !in used && (it == name || it !in onPage) }
+        used += n
+        out[i] = labels[i].copy(name = n)
+    }
+    return out
+}
+
+/**
+ * Whether ([x], [y]) sits in a table (a schedule listing rooms) rather than on the floor plan: 4+ long horizontal
+ * lines evenly spaced 6-20pt apart (ruled rows) within 40pt above or below; the last row has none below it.
+ * [pxPerPt] is bitmap pixels per PDF point; [isDark] reads one pixel.
+ */
+fun inTable(x: Float, y: Float, pxPerPt: Float, isDark: (x: Int, y: Int) -> Boolean): Boolean {
+    val minLen = 72 * pxPerPt // a paper inch
+    val cx = (x * pxPerPt).roundToInt()
+    fun spanAt(yy: Int): Float {
+        fun run(dir: Int): Int { // dark pixels along the row, bridging gaps of up to 2px (antialiasing)
+            var n = 0; var gap = 0; var k = 1
+            while (n < minLen && gap <= 2) { if (isDark(cx + dir * k, yy)) { n += gap + 1; gap = 0 } else gap++; k++ }
+            return n
+        }
+        return if (isDark(cx, yy)) 1f + run(1) + run(-1) else 0f
+    }
+    val rows = mutableListOf<Int>()
+    var yy = ((y - 40) * pxPerPt).roundToInt()
+    val end = ((y + 40) * pxPerPt).roundToInt()
+    while (yy <= end) {
+        if (spanAt(yy) >= minLen) { rows += yy; yy += (3 * pxPerPt).roundToInt().coerceAtLeast(2) } else yy++
+    }
+    val gaps = rows.zipWithNext { a, b -> (b - a) / pxPerPt }
+    // three gaps in a row, each 6-20pt and within 1.5pt of the first
+    return gaps.windowed(3).any { g -> g.all { it in 6f..20f && abs(it - g[0]) <= 1.5f } }
 }
 
 private fun displayName(word: String, after: String): String {

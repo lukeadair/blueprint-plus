@@ -1,6 +1,7 @@
 package com.scaletape
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class RoomsTest {
@@ -85,6 +86,72 @@ class RoomsTest {
         val text = "KITCHEN 10'x26'1 HALL 1 4'x4' BEDRM 2 12'x11' FLEX 12' x 10' PDR 5'x5'"
         val names = findRoomLabels(text, search(text) { 10f }).map { it.name }.sorted()
         assertEquals(listOf("Bedroom 2", "Flex", "Hall 1", "Kitchen", "Powder"), names)
+    }
+
+    @Test fun wordBeforeTheRoomWordKeepsRoomsApart() {
+        // Finley plan: GIRLS BATH, BOYS BATH and M. BATH were all "Bath". HALL BATH stays Hall + Bath; a note's
+        // "NEW BATH" is just Bath.
+        val text = "GIRLS BATH BOYS BATH M. BATH HALL BATH NEW BATH M. CLOSET"
+        val names = findRoomLabels(text, search(text) { 10f }).map { it.name }.sorted()
+        assertEquals(listOf("Bath", "Bath", "Boys Bath", "Girls Bath", "Hall", "M. Bath", "M. Closet"), names)
+    }
+
+    @Test fun wordBeforeOnAnotherLineIsNotPartOfTheName() {
+        val text = "GIRLS BATH"
+        val boxes = mapOf("BATH" to TextHit(6, 300f, 200f, 340f, 210f), "GIRLS" to TextHit(0, 300f, 100f, 350f, 110f))
+        assertEquals(listOf("Bath"), findRoomLabels(text) { listOfNotNull(boxes[it]) }.map { it.name })
+    }
+
+    @Test fun repeatedNamesAreNumbered() {
+        val labels = listOf(
+            RoomLabel("Storage", 500f, 300f), RoomLabel("Storage", 100f, 100f), RoomLabel("Bedroom", 0f, 50f),
+            RoomLabel("Bedroom 2", 0f, 60f), RoomLabel("Bedroom", 0f, 70f), RoomLabel("Bath", 0f, 0f), RoomLabel("Kitchen", 0f, 0f),
+        )
+        assertEquals(
+            listOf("Storage 2", "Storage", "Bedroom", "Bedroom 2", "Bedroom 3", "Bath 2", "Kitchen"),
+            numberRepeats(labels, taken = setOf("Bath")).map { it.name },
+        )
+    }
+
+    @Test fun tagOverTheLabelDoesNotHideIt() {
+        // Finley plan on the phone: a 5pt "PANTRY 1" elevation tag box overlaps the 10pt PANTRY label.
+        val text = "PANTRY 1 P KITCHEN PANTRY DINING"
+        val boxes = mapOf(
+            "PANTRY" to listOf(TextHit(0, 871f, 695f, 891f, 700f), TextHit(text.lastIndexOf("PANTRY"), 877f, 695f, 928f, 705f)),
+            "KITCHEN" to listOf(TextHit(text.indexOf("KITCHEN"), 901f, 1011f, 956f, 1021f)),
+            "DINING" to listOf(TextHit(text.indexOf("DINING"), 943f, 1176f, 986f, 1186f)),
+        )
+        val labels = findRoomLabels(text) { boxes[it].orEmpty() }
+        assertEquals(listOf("Dining", "Kitchen", "Pantry"), labels.map { it.name }.sorted())
+    }
+
+    @Test fun rotatedTagClippingTheLabelDoesNotHideIt() {
+        // Finley plan on the phone: a rotated "MASTER CLOSET 1" tag (5pt wide, 41pt tall) clips the M. CLOSET label.
+        val text = "MASTER CLOSET 1 NURSERY M. BEDROOM M. CLOSET M. BATH"
+        val at = text.indexOf("M. CLOSET") + 3
+        val boxes = mapOf(
+            "MASTER CLOSET" to listOf(TextHit(0, 508f, 854f, 513f, 895f)),
+            "CLOSET" to listOf(TextHit(7, 508f, 854f, 513f, 874f), TextHit(at, 495f, 888f, 546f, 899f)),
+            "M." to listOf(TextHit(at - 3, 478f, 888f, 491f, 898f)),
+            "BATH" to listOf(TextHit(text.indexOf("BATH"), 640f, 833f, 670f, 844f)),
+            "BEDROOM" to listOf(TextHit(text.indexOf("BEDROOM"), 275f, 922f, 330f, 933f)),
+        )
+        val names = findRoomLabels(text) { boxes[it].orEmpty() }.map { it.name }.sorted()
+        assertEquals(listOf("Bath", "Bedroom", "M. Closet"), names) // only the closet's "M." has a box here
+    }
+
+    @Test fun labelInTheLastRowOfATableIsSkipped() {
+        // Ruled rows every 11pt above the label, nothing below it.
+        val table = { x: Int, y: Int -> x in 100..300 && y in 150..205 && (y - 150) % 11 == 0 }
+        assertEquals(true, inTable(200f, 200f, 1f, table))
+    }
+
+    @Test fun labelInATableIsSkipped() {
+        // 1 px per point. A schedule: ruled rows every 12pt, 200pt wide; and a plan room: two walls 100pt apart.
+        val table = { x: Int, y: Int -> x in 100..300 && y in 100..300 && y % 12 == 0 }
+        assertEquals(true, inTable(200f, 200f, 1f, table))
+        val room = { x: Int, y: Int -> x in 100..300 && (y == 150 || y == 250) }
+        assertEquals(false, inTable(200f, 200f, 1f, room))
     }
 
     @Test fun nothingFound() {
