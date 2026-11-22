@@ -12,3 +12,4 @@ keystore.properties
 .claude/session-handoffs/
 .claude/ctx-guard.local.json
 .ctx-guard/
+.claude/
