@@ -77,6 +77,8 @@ data class Job(
     val editedPages: Set<Int> = emptySet(),
     /** The user confirmed the scale (Save in Job Config, or a calibration). Rooms aren't seeded before that. */
     val scaleSet: Boolean = true,
+    /** The scale read from the plan when the job was made (null = none found); Job Config marks it "found in plan". */
+    val foundScale: String? = null,
 ) {
     /**
      * Room [old] renamed to [to] (an existing room's name merges the two). Its runs move with it, marked
@@ -92,6 +94,9 @@ data class Job(
     /** Null when the scale text doesn't parse. */
     fun totalInches(): Double? = parseScale(scale)?.let { r -> runs.sumOf { it.inches(r) } }
 }
+
+/** How rooms are listed (run list, export): alphabetical so they don't jump when a run moves, Unassigned ("") last. */
+val roomOrder: Comparator<String> = compareBy({ it.isEmpty() }, { it.lowercase() })
 
 fun Job.toJson(): String = JSONObject()
     .put("id", id).put("name", name).put("scale", scale).put("page", page).put("updated", updated).put("created", created)
@@ -112,6 +117,7 @@ fun Job.toJson(): String = JSONObject()
     .put("seededPages", JSONArray(seededPages.sorted()))
     .put("editedPages", JSONArray(editedPages.sorted()))
     .put("scaleSet", scaleSet)
+    .apply { if (foundScale != null) put("foundScale", foundScale) }
     .toString()
 
 fun jobFromJson(json: String): Job {
@@ -153,5 +159,6 @@ fun jobFromJson(json: String): Job {
         seededPages = (0 until (seededArr?.length() ?: 0)).map { seededArr!!.getInt(it) }.toSet(),
         editedPages = (0 until (editedArr?.length() ?: 0)).map { editedArr!!.getInt(it) }.toSet(),
         scaleSet = o.optBoolean("scaleSet", true), // older saves: already in use, don't prompt
+        foundScale = if (o.has("foundScale")) o.getString("foundScale") else null,
     )
 }

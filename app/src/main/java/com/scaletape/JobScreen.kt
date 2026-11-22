@@ -1,13 +1,13 @@
 package com.scaletape
 
 import android.annotation.SuppressLint
+import android.content.Intent
+import android.widget.Toast
 import android.graphics.Bitmap
 import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.pdf.PdfRenderer
-import android.os.Build
 import android.os.ParcelFileDescriptor
-import android.os.ext.SdkExtensions
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
@@ -98,6 +98,7 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.semantics.contentDescription
@@ -310,6 +311,7 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
     val total = job.totalInches()
 
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
     // A point must sit a little away from the last one, so tapping Set twice can't add a duplicate node.
     val minMovePx = with(LocalDensity.current) { 8.dp.toPx() }
     fun movedEnough(c: Offset) = chain.lastOrNull()?.let { (c - it).getDistance() * zoom >= minMovePx } ?: true
@@ -921,6 +923,9 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
                     OutlinedTextField(
                         value = scale, onValueChange = { scale = it }, singleLine = true, isError = !scaleValid,
                         label = { Text("Scale") },
+                        suffix = if (job.foundScale?.let { parseScale(it) == parseScale(scale) } == true) {
+                            { Text("(loaded from plan)") }
+                        } else null,
                         supportingText = { Text("e.g. 1/4\" = 1', 1/8\" = 1', 3/4\" = 1'") },
                     )
                     OutlinedButton(
@@ -931,6 +936,23 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
                         Modifier.fillMaxWidth(),
                         enabled = bitmap != null,
                     ) { Text("Calibrate from a known length") }
+                    OutlinedButton(
+                        onClick = {
+                            val r = ratio ?: return@OutlinedButton
+                            scope.launch {
+                                runCatching { withContext(Dispatchers.IO) { store.exportQuote(job, r) } }
+                                    .onSuccess { uri ->
+                                        val send = Intent(Intent.ACTION_SEND).setType(XLSX_MIME)
+                                            .putExtra(Intent.EXTRA_STREAM, uri).putExtra(Intent.EXTRA_SUBJECT, job.name)
+                                            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                        context.startActivity(Intent.createChooser(send, "Export spreadsheet"))
+                                    }
+                                    .onFailure { Toast.makeText(context, "Couldn't export: ${it.message}", Toast.LENGTH_LONG).show() }
+                            }
+                        },
+                        Modifier.fillMaxWidth(),
+                        enabled = ratio != null && (job.runs.isNotEmpty() || job.rooms.isNotEmpty()),
+                    ) { Text("Export spreadsheet") }
                     TextButton(
                         onClick = { editing = false; confirmClear = true },
                         Modifier.fillMaxWidth(),
@@ -1153,9 +1175,6 @@ private fun Bitmap.isDark(x: Int, y: Int): Boolean {
     return ((p shr 16 and 255) * 3 + (p shr 8 and 255) * 6 + (p and 255)) / 10 < 160
 }
 
-// PdfRenderer text search arrived in Android 15 (API 35), and on 11+ through SDK extension 13.
-private val canReadPdfText = Build.VERSION.SDK_INT >= 35 ||
-    (Build.VERSION.SDK_INT >= 30 && SdkExtensions.getExtensionVersion(Build.VERSION_CODES.S) >= 13)
 
 /** Room labels on [page]; empty when the device can't read PDF text or the page has none (e.g. scans). */
 @SuppressLint("NewApi") // guarded by canReadPdfText

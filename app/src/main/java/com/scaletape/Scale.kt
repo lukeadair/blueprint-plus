@@ -72,3 +72,79 @@ fun formatFeetInches(inches: Double): String {
     val total = inches.roundToLong()
     return "${total / 12}' ${total % 12}\""
 }
+
+private const val IN = """(?:"|in\b|inch(?:es)?\b)"""
+private const val NUM = """(?:\d+/\d+|\d+(?:\.\d+)?(?:\s+\d+/\d+)?)"""
+// `1/4" = 1'-0"`, `3/16 in = 1 ft`, `1" = 20'`: paper (inches, unit optional) = real (feet, then optional inches).
+// The inches tail needs the hyphen and stays on the line, so `1' 6" UPPERS` or `1'⏎36"` isn't read as 1'-6" / 1'-36".
+private val SCALE_PHRASE = Regex(
+    """(?<![\d/.])$NUM\s*$IN?\s*=\s*\d+(?:\.\d+)?\s*(?:'|ft\b|feet\b|foot\b)(?:[ \t]*-[ \t]*$NUM[ \t]*$IN)?""",
+    RegexOption.IGNORE_CASE,
+)
+
+/**
+ * The drawing scale stated in [text] (a plan's title block, a PDF measure string), or null. Only plan scales count
+ * (3" per foot or smaller, so a note like `30" = 2'-6"` doesn't), and ones ending `= 1'` beat others (`1" = 20'`).
+ * Among those the most common wins (a sheet's main scale outnumbers its detail callouts). Standard scales come back
+ * as `1/4" = 1'`.
+ */
+fun findScale(text: String): String? {
+    val s = text.replace('’', '\'').replace('′', '\'').replace('”', '"').replace('″', '"')
+    val all = SCALE_PHRASE.findAll(s).mapNotNull { m ->
+        parseScale(m.value)?.takeIf { it * 12 <= 3 + 1e-9 }?.let { it to m.value.trim() }
+    }.toList()
+    val perOneFoot = all.filter { isPerOneFoot(it.second) }
+    val found = perOneFoot.ifEmpty { all }
+    val ratio = found.groupingBy { it.first }.eachCount().maxByOrNull { it.value }?.key ?: return null
+    val perFoot = ratio * 12
+    return STANDARD_SCALES.firstOrNull { abs(perFoot - parseNumber(it)!!) < 1e-9 }?.let { "$it\" = 1'" }
+        ?: found.first { it.first == ratio }.second
+}
+
+private fun isPerOneFoot(scale: String) = parseLength(scale.substringAfter('='), 12.0) == 12.0
+
+/**
+ * The plan's scale from each page's [findScale] in page order (lazy, so pages after a hit aren't read): the first
+ * `= 1'` one, else the first of any kind. A cover or site sheet (`1" = 20'`) usually comes before the floor plan.
+ */
+fun pickPlanScale(pageScales: Sequence<String?>): String? {
+    var first: String? = null
+    for (s in pageScales) {
+        if (s == null) continue
+        if (isPerOneFoot(s)) return s
+        if (first == null) first = s
+    }
+    return first
+}
+
+/**
+ * The scale saved in the PDF file itself: `/R (1/4 in = 1 ft)` in a `/Measure` dict (Bluebeam/Acrobat calibration),
+ * or one written in the Info Title/Subject/Keywords. Looks in the raw file and in Flate-compressed object streams.
+ * shortcut: UTF-16 strings, XMP and non-Flate object streams are skipped; add them if a real plan needs it.
+ */
+fun scaleInPdf(bytes: ByteArray): String? {
+    val raw = String(bytes, Charsets.ISO_8859_1)
+    // Lazy: only one inflated object stream is alive at a time.
+    val texts = sequenceOf(raw) + Regex("""/Type\s*/ObjStm""").findAll(raw).mapNotNull { m ->
+        val start = Regex("""stream\r?\n""").find(raw, m.range.last)?.range?.last ?: return@mapNotNull null
+        inflate(bytes, start + 1)
+    }
+    val strings = texts.flatMap { t ->
+        Regex("""/(?:R|Title|Subject|Keywords)\s*\(((?:\\.|[^\\)])*)\)""").findAll(t).map { it.groupValues[1] }
+    }
+    return findScale(strings.joinToString("\n"))
+}
+
+/** A zlib stream starting at [from], or null if it isn't one. Capped at 16 MB so a bad file can't run out of memory. */
+private fun inflate(bytes: ByteArray, from: Int): String? = runCatching {
+    val inf = java.util.zip.Inflater().apply { setInput(bytes, from, bytes.size - from) }
+    val out = java.io.ByteArrayOutputStream()
+    val buf = ByteArray(65536)
+    while (!inf.finished() && out.size() < 16 shl 20) {
+        val n = inf.inflate(buf)
+        if (n == 0 && (inf.needsInput() || inf.needsDictionary())) break
+        out.write(buf, 0, n)
+    }
+    inf.end()
+    String(out.toByteArray(), Charsets.ISO_8859_1)
+}.getOrNull()

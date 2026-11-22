@@ -44,6 +44,8 @@ class JobTest {
         assertEquals(500L, jobFromJson(old).created)
         assertEquals(true, jobFromJson(old.replace(Regex(",?\"scaleSet\":\\w+"), "")).scaleSet)
         assertEquals(false, jobFromJson(Job("i", "n", scaleSet = false).toJson()).scaleSet)
+        assertEquals(null, jobFromJson(old).foundScale)
+        assertEquals("1/8\" = 1'", jobFromJson(Job("i", "n", foundScale = "1/8\" = 1'").toJson()).foundScale)
     }
 
     @Test fun totals() {

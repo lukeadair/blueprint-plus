@@ -68,7 +68,7 @@ fun RunList(
 ) {
     val byRoom = runs.withIndex().groupBy { it.value.room.orEmpty() }
     val sections = (byRoom.keys + extraRooms).distinct()
-        .sortedWith(compareBy({ it.isEmpty() }, { it.lowercase() }))
+        .sortedWith(roomOrder)
         .map { it to byRoom[it].orEmpty() }
     val listState = rememberLazyListState()
     val currentRuns by rememberUpdatedState(runs)
