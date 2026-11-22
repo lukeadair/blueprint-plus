@@ -2,11 +2,18 @@ package com.scaletape
 
 import android.annotation.SuppressLint
 import android.graphics.Bitmap
+import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.pdf.PdfRenderer
 import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.os.ext.SdkExtensions
+import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.text.TextRecognition
+import com.google.mlkit.vision.text.latin.TextRecognizerOptions
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -102,6 +109,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlin.math.abs
+import kotlin.math.ceil
 import kotlin.math.roundToInt
 
 // PdfRenderer isn't thread-safe: every render and close goes through this one thread.
@@ -194,16 +203,22 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
     LaunchedEffect(renderer) { // after the render effect above, so the page shows first
         val r = renderer ?: return@LaunchedEffect
         // shortcut: reads every page up front; fine for plan sets of a few dozen sheets, make it per-page if big sets lag.
-        labels = withContext(pdfThread) { (0 until r.pageCount).associateWith { r.roomLabels(it) } }
+        val fromText = withContext(pdfThread) { (0 until r.pageCount).associateWith { r.roomLabels(it) } }
+        labels = fromText.filterValues { it.isNotEmpty() }
+        // Last resort: OCR pages with no text labels. A page stays out of `labels` until its OCR is done, so it
+        // isn't seeded as roomless first. shortcut: re-runs on every open with no cache; persist in Job if slow.
+        for (pg in fromText.filterValues { it.isEmpty() }.keys) labels = labels + (pg to r.ocrRoomLabels(pg))
     }
 
     /**
      * Picks rooms for runs the user hasn't placed by hand (all of them, or only new ones without a room):
      * the nearest label not behind a wall. Wall sizes depend on the scale, so this reruns when it changes.
      */
-    suspend fun refreshRooms(onlyNew: Boolean) {
+    suspend fun refreshRooms(onlyNew: Boolean, pages: Set<Int>? = null) {
         val r = renderer ?: return
-        val todo = job.runs.filter { !it.roomManual && it.page !in job.seededPages && (!onlyNew || it.room == null) }
+        val todo = job.runs.filter {
+            !it.roomManual && it.page !in job.seededPages && (!onlyNew || it.room == null) && (pages == null || it.page in pages)
+        }
         if (todo.isEmpty() || labels.isEmpty()) return
         val pageLabels = labels
         val scaleRatio = parseScale(job.scale)
@@ -212,7 +227,7 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
         val shownPpi = ppi
         val picked: Map<Run, String?> = withContext(pdfThread) {
             todo.groupBy { it.page }.flatMap { (pg, runs) ->
-                val l = pageLabels[pg].orEmpty()
+                val l = pageLabels[pg] ?: return@flatMap emptyList() // not read yet (OCR pending): keep its rooms
                 if (l.isEmpty()) return@flatMap runs.map { it to null }
                 val (bmp, bppi) = if (pg == shownPage && shown != null) shown to shownPpi else r.renderPage(pg)
                 val walls = scaleRatio?.let { ratio -> WallFinder((bppi * ratio).toFloat()) { x, y -> bmp.isDark(x, y) } }
@@ -228,7 +243,14 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
             update { it.copy(runs = updated) }
         }
     }
-    LaunchedEffect(labels, job.scale) { refreshRooms(onlyNew = false) }
+    // What the last finished refresh saw: when only labels changed (an OCR page came in), re-pick just those pages.
+    val lastRefresh = remember { arrayOf<Any?>(null, null) }
+    LaunchedEffect(labels, job.scale) {
+        @Suppress("UNCHECKED_CAST") val prev = lastRefresh[0] as Map<Int, List<RoomLabel>>?
+        val pages = if (prev != null && lastRefresh[1] == job.scale) labels.keys.filter { labels[it] != prev[it] }.toSet() else null
+        refreshRooms(onlyNew = false, pages)
+        lastRefresh[0] = labels; lastRefresh[1] = job.scale // only once done: a cancelled refresh is redone next time
+    }
 
     // First time a page is shown with a valid scale (and again after Redetect, or a scale change if not edited): draw a
     // starting border around each room label, found from the walls. Runs on this page then go by the borders.
@@ -996,6 +1018,57 @@ private fun PlanCanvas(
     }
 }
 
+/**
+ * Room labels on [page] read by on-device OCR; empty if it fails. The page is rendered in tiles at 3 px per point
+ * (216 dpi): a whole page fits in 4096 px at about 1.6, too small to read 7pt text. Not for `pdfThread`.
+ */
+private suspend fun PdfRenderer.ocrRoomLabels(page: Int): List<RoomLabel> = runCatching {
+    val s = 3f
+    val tilePx = 2048
+    val tilePt = tilePx / s
+    // Overlap: a line touching an inner tile edge is skipped, so any line up to 300pt (a long label with its size,
+    // or two labels ML Kit merged) must fit whole in the next tile.
+    val step = tilePt - 300f
+    val (w, h) = withContext(pdfThread) { openPage(page).use { it.width.toFloat() to it.height.toFloat() } }
+    fun starts(len: Float) = (0..ceil(maxOf(0f, len - tilePt) / step).toInt()).map { it * step }
+    val bmp = Bitmap.createBitmap(tilePx, tilePx, Bitmap.Config.ARGB_8888)
+    val client = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+    val words = mutableListOf<OcrWord>()
+    val seen = mutableListOf<Triple<String, Float, Float>>() // lines already read in an overlapping tile
+    try {
+        for (ty in starts(h)) for (tx in starts(w)) {
+            withContext(pdfThread) {
+                openPage(page).use { p ->
+                    bmp.eraseColor(android.graphics.Color.WHITE)
+                    // With a transform the page draws at 1 px per point, then the transform applies.
+                    val m = Matrix().apply { postScale(s, s); postTranslate(-tx * s, -ty * s) }
+                    p.render(bmp, null, m, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                }
+            }
+            val text = suspendCancellableCoroutine { c ->
+                client.process(InputImage.fromBitmap(bmp, 0))
+                    .addOnSuccessListener { c.resume(it) }
+                    .addOnFailureListener { c.resumeWithException(it) }
+            }
+            for (l in text.textBlocks.flatMap { it.lines }) {
+                val b = l.boundingBox ?: continue
+                // A line cut by an inner tile edge is read whole in the next tile.
+                if ((tx > 0 && b.left < 2) || (ty > 0 && b.top < 2) ||
+                    (tx + tilePt < w && b.right > tilePx - 2) || (ty + tilePt < h && b.bottom > tilePx - 2)) continue
+                val cx = tx + b.exactCenterX() / s; val cy = ty + b.exactCenterY() / s
+                if (seen.any { it.first == l.text && abs(it.second - cx) < 5 && abs(it.third - cy) < 5 }) continue
+                seen += Triple(l.text, cx, cy)
+                for (e in l.elements) e.boundingBox?.let {
+                    words += OcrWord(e.text, seen.size, tx + it.left / s, ty + it.top / s, tx + it.right / s, ty + it.bottom / s)
+                }
+            }
+        }
+    } finally {
+        client.close() // bmp isn't recycled: a cancelled OCR may still be reading it
+    }
+    ocrLabels(words)
+}.getOrDefault(emptyList())
+
 /** Renders [page] to a white-backed bitmap; returns it and its pixels per paper inch. Call on `pdfThread`. */
 private fun PdfRenderer.renderPage(page: Int): Pair<Bitmap, Float> = openPage(page).use { p ->
     // PDF units are points (1/72"), so render scale s gives 72*s pixels per paper inch.
@@ -1023,7 +1096,7 @@ private fun PdfRenderer.roomLabels(page: Int): List<RoomLabel> {
     if (!canReadPdfText) return emptyList()
     return runCatching {
         openPage(page).use { p ->
-            findRoomLabels(p.textContents.joinToString("") { it.text }) { word ->
+            findRoomLabels(p.textContents.joinToString("") { it.text }, search = { word ->
                 p.searchText(word).filter { it.bounds.isNotEmpty() }.map { m ->
                     TextHit(
                         m.textStartIndex,
@@ -1031,7 +1104,7 @@ private fun PdfRenderer.roomLabels(page: Int): List<RoomLabel> {
                         m.bounds.maxOf { it.right }, m.bounds.maxOf { it.bottom },
                     )
                 }
-            }
+            })
         }
     }.getOrDefault(emptyList())
 }

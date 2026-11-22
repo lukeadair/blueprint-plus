@@ -22,6 +22,8 @@ android {
         targetSdk = 36
         versionCode = 3
         versionName = "1.2"
+        // shortcut: arm64 only (ML Kit adds ~11 MB per ABI); no x86 emulator or 32-bit phones. Add ABIs here if needed.
+        ndk { abiFilters += "arm64-v8a" }
     }
 
     signingConfigs {
@@ -59,6 +61,9 @@ dependencies {
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-core")
+
+    // On-device OCR, bundled model (no network): last-resort room labels for pages with no readable text.
+    implementation("com.google.mlkit:text-recognition:16.0.1")
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303") // Android's org.json is a stub in JVM unit tests

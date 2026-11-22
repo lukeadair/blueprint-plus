@@ -53,6 +53,27 @@ class WallFinderTest {
         assertFalse(walls.crosses(20f, 100f, 120f, 70f))
     }
 
+    /**
+     * A 400x400 plan at 4 px per inch with a 26" wall stub beside a door (Building Plan 2's bath): faces at y 200 and
+     * 214 run right from a through-wall (faces x 100 and 114, the near one open where the stub joins) to a jamb at x 219.
+     */
+    private fun stubPlan(throughWall: Boolean = true, closedMouth: Boolean = false): WallFinder {
+        val g = Array(400) { BooleanArray(400) }
+        fun f(x0: Int, y0: Int, x1: Int, y1: Int) { for (x in x0..x1) for (y in y0..y1) g[x][y] = true }
+        f(114, 200, 219, 201); f(114, 214, 219, 215) // the stub's faces
+        f(218, 200, 219, 215) // the jamb at the door
+        if (throughWall) { f(100, 0, 101, 399); f(114, 0, 115, 201); f(114, 214, 115, 399) }
+        if (closedMouth) f(114, 200, 115, 215)
+        return WallFinder(4f) { x, y -> x in 0 until 400 && y in 0 until 400 && g[x][y] }
+    }
+
+    @Test fun shortWallBesideADoor() = assertTrue(stubPlan().crosses(170f, 150f, 170f, 260f))
+
+    @Test fun shortBoxIsAFixture() = assertFalse(stubPlan(closedMouth = true).crosses(170f, 150f, 170f, 260f))
+
+    @Test fun shortDoubleOutlineJoiningNoWallIsAFixture() = // a washer's outline
+        assertFalse(stubPlan(throughWall = false).crosses(170f, 150f, 170f, 260f))
+
     @Test fun wallFaceTouchingAFixture() {
         fill(50, 0, 52, 199); fill(64, 0, 66, 199)
         fill(40, 95, 50, 105) // a faucet handle against the first face: one dark stretch on the ray

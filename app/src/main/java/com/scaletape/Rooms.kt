@@ -15,6 +15,31 @@ data class RoomLabel(val name: String, val x: Float, val y: Float, val halfW: Fl
 /** One text-search match: where it starts in the page text, and its box in PDF points. */
 data class TextHit(val start: Int, val left: Float, val top: Float, val right: Float, val bottom: Float)
 
+/** One word read by OCR, boxed in PDF points; [line] numbers the text line it was read on. */
+data class OcrWord(val text: String, val line: Int, val left: Float, val top: Float, val right: Float, val bottom: Float)
+
+/** Room labels from OCR words (reading order): the words become the page text, and a search is a match in that text. */
+fun ocrLabels(all: List<OcrWord>): List<RoomLabel> {
+    // OCR boxes are too noisy for the label-height vote (a 7pt "BATH" reads 12pt tall), so notes that mention a room
+    // are told apart by their line instead: a label's line is a few words, a sentence is longer.
+    val lineLen = all.groupingBy { it.line }.eachCount()
+    val words = all.filter { lineLen.getValue(it.line) <= 4 }
+    val text = StringBuilder()
+    val starts = words.mapIndexed { i, w ->
+        if (i > 0) text.append(if (w.line == words[i - 1].line) ' ' else '\n')
+        text.length.also { text.append(w.text.uppercase()) }
+    }
+    val upper = text.toString()
+    return findRoomLabels(upper, false) { word ->
+        generateSequence(upper.indexOf(word).takeIf { it >= 0 }) { i -> upper.indexOf(word, i + 1).takeIf { it >= 0 } }
+            .mapNotNull { i ->
+                val hit = words.indices.filter { starts[it] < i + word.length && starts[it] + words[it].text.length > i }.map { words[it] }
+                if (hit.isEmpty()) null
+                else TextHit(i, hit.minOf { it.left }, hit.minOf { it.top }, hit.maxOf { it.right }, hit.maxOf { it.bottom })
+            }.toList()
+    }
+}
+
 // Words that label rooms on residential plans. Longest first so "MASTER BATH" claims its text before "BATH".
 // Left out on purpose: words that also show up in general notes (DECK, BAR, DEN, SHOP, FAMILY, SUITE).
 private val ROOM_WORDS = listOf(
@@ -30,13 +55,13 @@ private val ROOM_WORDS = listOf(
     "HALLWAY", "HALL", "PORCH", "PATIO", "NOOK", "POWDER", "PWDR", "STORAGE", "LOFT", "LIBRARY", "GYM",
     "FLEX", "CARPORT",
     // Common plan abbreviations
-    "M.BTH", "M. BTH", "M.BATH", "MSTR BATH", "MSTR BDRM", "BEDRM", "BDRM", "BTH", "PDR", "LNDY", "CL", "MASTER CL", "MSTR CL",
+    "M.BTH", "M. BTH", "M.BATH", "MSTR BATH", "MSTR BDRM", "BEDRM", "BDRM", "BTH", "PDR", "LNDY", "UTIL", "CL", "MASTER CL", "MSTR CL",
 ).sortedByDescending { it.length }
 
 private val ABBREVIATIONS = mapOf(
     "CLOS" to "Closet", "CL" to "Closet", "WIC" to "Walk-in Closet", "PWDR" to "Powder", "PDR" to "Powder",
     "M.BTH" to "Master Bath", "M. BTH" to "Master Bath", "M.BATH" to "Master Bath", "MSTR BATH" to "Master Bath",
-    "MSTR BDRM" to "Master Bedroom", "BEDRM" to "Bedroom", "BDRM" to "Bedroom", "BTH" to "Bath", "LNDY" to "Laundry",
+    "MSTR BDRM" to "Master Bedroom", "BEDRM" to "Bedroom", "BDRM" to "Bedroom", "BTH" to "Bath", "LNDY" to "Laundry", "UTIL" to "Utility",
     "MASTER CL" to "Master Closet", "MSTR CL" to "Master Closet",
 )
 // Too short to trust alone (CL is also "centerline"): only counts as a room when numbered, like "CL 1".
@@ -51,7 +76,10 @@ private val NUMBER_AFTER = Regex("""^\s*#?(\d{1,2})(?![\d'"’′x×.,/-])""")
  * with its position (PdfRenderer's searchText). Only whole words count, and only at the text height most
  * room words on the page share: notes that mention a room ("remove exist. deck") use a different size.
  */
-fun findRoomLabels(pageText: String, search: (String) -> List<TextHit>): List<RoomLabel> {
+fun findRoomLabels(pageText: String, search: (String) -> List<TextHit>): List<RoomLabel> = findRoomLabels(pageText, true, search)
+
+/** [byHeight] false skips the label-height filter (OCR boxes are too noisy for it). */
+private fun findRoomLabels(pageText: String, byHeight: Boolean, search: (String) -> List<TextHit>): List<RoomLabel> {
     val upper = pageText.uppercase()
     val hits = mutableListOf<Pair<String, TextHit>>()
     val textHeight = mutableMapOf<TextHit, Float>()
@@ -59,7 +87,13 @@ fun findRoomLabels(pageText: String, search: (String) -> List<TextHit>): List<Ro
         // The phrase as the text stores it, plus its words placed together on the page in any text order.
         val found = (if (upper.contains(word)) search(word).map { it to it.start + word.length } else emptyList()) +
             (if (' ' in word) placedTogether(word, upper, search) else emptyList())
-        for ((h, end) in found) {
+        for ((h0, end0) in found) {
+            // searchText's start can sit a few chars off ("SHALL" for HALL, 2 early after a CR/LF): find the word again nearby.
+            val at = if (h0.start >= 0 && !upper.regionMatches(h0.start, word, 0, word.length)) {
+                upper.indexOf(word, maxOf(0, h0.start - 4)).takeIf { it >= 0 && abs(it - h0.start) <= 4 }
+            } else null
+            val h = if (at != null) h0.copy(start = at) else h0
+            val end = if (at != null) at + word.length else end0
             val indexed = h.start >= 0 && end <= upper.length && upper.regionMatches(h.start, word, 0, word.length)
             if (indexed && h.start > 0 && upper[h.start - 1].isLetter()) continue // "...BATH" inside a word
             if (indexed && end < upper.length && upper[end].isLetter()) continue // "CLOS" in "CLOSED"
@@ -84,7 +118,7 @@ fun findRoomLabels(pageText: String, search: (String) -> List<TextHit>): List<Ro
     val commonHeight = voters.groupingBy { textHeight.getValue(it.second).roundToInt() }.eachCount().maxBy { it.value }.key
     return hits
         // Tight: search boxes are whole points, so a 6pt note can measure 8 next to 10pt labels.
-        .filter { abs(textHeight.getValue(it.second) - commonHeight) <= maxOf(1f, commonHeight * 0.12f) }
+        .filter { !byHeight || abs(textHeight.getValue(it.second) - commonHeight) <= maxOf(1f, commonHeight * 0.12f) }
         .filterNot { notACabinetRoom(it.first) }
         .map { (name, h) -> RoomLabel(name, (h.left + h.right) / 2, (h.top + h.bottom) / 2, (h.right - h.left) / 2, (h.bottom - h.top) / 2) }
 }
@@ -97,7 +131,7 @@ private fun glyphSize(h: TextHit) = minOf(h.right - h.left, h.bottom - h.top)
 private val KEPT_CLOSET = Regex("""^(?:(?:Master|Mstr|Mst|Primary|His|Hers?|Walk-in)\b|M\.)""")
 private fun notACabinetRoom(name: String): Boolean {
     val base = name.replace(Regex("""\s+\d+$"""), "")
-    return listOf("Porch", "Patio", "Garage", "Carport", "Storage").any { it in base } || base.endsWith("Hall") || base.endsWith("Hallway") || base.endsWith("Closet") && !KEPT_CLOSET.containsMatchIn(base)
+    return listOf("Porch", "Patio", "Garage", "Carport", "Storage", "Foyer").any { it in base } || base.endsWith("Hall") || base.endsWith("Hallway") || base.endsWith("Closet") && !KEPT_CLOSET.containsMatchIn(base)
 }
 
 /** `"GUEST ROOM"` -> `Guest Room`; `"CLOS"` -> `Closet`; `"BEDROOM"` followed by `" 2"` -> `Bedroom 2`. */
@@ -241,16 +275,19 @@ fun pickRoom(labels: List<RoomLabel>, x: Float, y: Float, pxPerPoint: Float, wal
  * Finds walls along a sightline on a rendered plan. A wall is two long parallel lines 3"-12" apart, center to
  * center (a stud wall is 3.5"; a countertop edge over its cabinet face is ~2.5"), or one long solid band at
  * least 3" thick (filled walls). "Long" means straight for 48"+, which
- * leaves out text, fixture symbols (a 36" cooktop's outline, burners, sinks) and dashed lines. Sizes are real-world inches,
+ * leaves out text, fixture symbols (a 36" cooktop's outline, burners, sinks) and dashed lines. A wall stub beside a
+ * door (faces 24"-48") counts too when the pair is closed at one end only: the jamb at the door, open where it
+ * joins the next wall (a fixture's box is closed at both). Sizes are real-world inches,
  * turned into pixels with [pxPerInch] (bitmap ppi x drawing scale). [isDark] reads one pixel.
  */
 class WallFinder(pxPerInch: Float, private val isDark: (x: Int, y: Int) -> Boolean) {
     private val minGap = 3 * pxPerInch
     private val maxGap = 12 * pxPerInch
     private val minLength = 48 * pxPerInch
+    private val stubLength = 24 * pxPerInch
 
-    /** A long line the ray crosses [t] pixels along. */
-    private class Line(val t: Float, val angle: Double, val thickness: Float, val sinToRay: Double)
+    /** A line the ray crosses [t] pixels along; [ends] (x, y, x, y) only on a short (stub) line, null on a long one. */
+    private class Line(val t: Float, val angle: Double, val thickness: Float, val sinToRay: Double, val ends: FloatArray? = null)
 
     /** Whether the segment from (x0, y0) toward (x1, y1) crosses a wall before reaching the box around (x1, y1). */
     fun crosses(x0: Float, y0: Float, x1: Float, y1: Float, halfW: Float = 0f, halfH: Float = 0f): Boolean {
@@ -273,12 +310,46 @@ class WallFinder(pxPerInch: Float, private val isDark: (x: Int, y: Int) -> Boole
         }
         if (runStart >= 0) lines += linesIn(x0, y0, ux, uy, runStart, i - 1, rayAngle)
 
-        if (lines.any { it.thickness >= minGap }) return true // filled wall
-        return lines.zipWithNext().any { (a, b) ->
+        fun pair(a: Line, b: Line): Boolean {
             val parallel = abs(sin(a.angle - b.angle)) < sin(15 * PI / 180)
             // center to center, measured across the lines rather than along the ray
             val gap = (b.t - a.t) * a.sinToRay.toFloat()
-            parallel && gap in minGap..maxGap
+            return parallel && gap in minGap..maxGap
+        }
+        val long = lines.filter { it.ends == null }
+        if (long.any { it.thickness >= minGap }) return true // filled wall
+        if (long.zipWithNext().any { (a, b) -> pair(a, b) }) return true
+        return lines.zipWithNext().any { (a, b) -> a.ends != null && b.ends != null && pair(a, b) && isStub(a, b) }
+    }
+
+    /**
+     * Short faces [a] and [b] are a wall stub beside a door: the shorter one is joined straight across to the other
+     * at one end only (the jamb), and its other end meets a long line across it (the face of the wall it joins). A
+     * fixture's box is closed at both ends, a washer's double outline meets no long line, unrelated lines neither.
+     */
+    private fun isStub(a: Line, b: Line): Boolean {
+        fun len(l: Line) = l.ends!!.let { hypot(it[0] - it[2], it[1] - it[3]) }
+        val (s, o) = if (len(a) <= len(b)) a to b else b to a
+        val e = s.ends!!; val oe = o.ends!!
+        val ox = cos(o.angle).toFloat(); val oy = sin(o.angle).toFloat()
+        val sx = cos(s.angle).toFloat(); val sy = sin(s.angle).toFloat()
+        val closed = (0..2 step 2).filter { i ->
+            val x1 = e[i]; val y1 = e[i + 1]
+            val k = (x1 - oe[0]) * ox + (y1 - oe[1]) * oy // the other face's point straight across
+            val x2 = oe[0] + ox * k; val y2 = oe[1] + oy * k
+            (-2..2).any { d -> // the face's last dark pixel may sit on either side of the closing stroke
+                listOf(0.25f, 0.5f, 0.75f).all { f -> isDark((x1 + (x2 - x1) * f + sx * d).roundToInt(), (y1 + (y2 - y1) * f + sy * d).roundToInt()) }
+            }
+        }
+        if (closed.size != 1) return false
+        // The open end of either face: only the one on the joined wall's side meets its face.
+        val ex = e[2 - closed[0]]; val ey = e[3 - closed[0]]
+        val j = if (hypot(oe[0] - ex, oe[1] - ey) <= hypot(oe[2] - ex, oe[3] - ey)) 0 else 2
+        return listOf(ex to ey, oe[j] to oe[j + 1]).any { (x0, y0) ->
+            (-2..2).any { d -> // the face may stop a pixel short of the wall's face, or on it
+                val x = x0 + sx * d; val y = y0 + sy * d
+                (-2..2).any { k -> val a2 = s.angle + PI / 2 + k * PI / 36; darkSpan(x, y, cos(a2).toFloat(), sin(a2).toFloat(), minLength) >= minLength }
+            }
         }
     }
 
@@ -301,10 +372,13 @@ class WallFinder(pxPerInch: Float, private val isDark: (x: Int, y: Int) -> Boole
             val width = group?.let { g -> g.maxOf { it.thickness } / g.first().sinToRay.toFloat() + 2 }
             if (group != null && width != null && l.t - group.last().t <= width) group += l else merged += mutableListOf(l)
         }
-        return merged.map { g -> Line(g.sumOf { it.t.toDouble() }.toFloat() / g.size, g.first().angle, g.maxOf { it.thickness }, g.first().sinToRay) }
+        return merged.map { g ->
+            Line(g.sumOf { it.t.toDouble() }.toFloat() / g.size, g.first().angle, g.maxOf { it.thickness }, g.first().sinToRay,
+                g.first().ends.takeIf { g.all { it.ends != null } })
+        }
     }
 
-    /** The long straight line through ([cx], [cy]), [t] along the ray, or null if there isn't one. */
+    /** The straight line (24"+) through ([cx], [cy]), [t] along the ray, or null if there isn't one. */
     private fun lineAt(cx: Float, cy: Float, t: Float, rayAngle: Double): Line? {
         var best = 0f
         var bestAngle = 0.0
@@ -314,7 +388,7 @@ class WallFinder(pxPerInch: Float, private val isDark: (x: Int, y: Int) -> Boole
             if (length > best) { best = length; bestAngle = a }
             if (best >= minLength) break
         }
-        if (best < minLength) return null
+        if (best < stubLength) return null
         val sinToRay = abs(sin(bestAngle - rayAngle))
         if (sinToRay < 0.25) return null // the ray runs along this line, not across it
         // Thickness across the line, at three spots along it: the smallest ignores places where another line crosses.
@@ -323,7 +397,18 @@ class WallFinder(pxPerInch: Float, private val isDark: (x: Int, y: Int) -> Boole
         val thickness = listOf(0f, minLength / 4, -minLength / 4).minOf { o ->
             darkSpan(cx + ax * o, cy + ay * o, -ay, ax, maxGap)
         }
-        return Line(t, bestAngle, thickness, sinToRay)
+        val ends = if (best >= minLength) null else {
+            val f = darkRun(cx, cy, ax, ay, minLength); val b = darkRun(cx, cy, -ax, -ay, minLength)
+            floatArrayOf(cx + ax * f, cy + ay * f, cx - ax * b, cy - ay * b)
+        }
+        return Line(t, bestAngle, thickness, sinToRay, ends)
+    }
+
+    /** How many dark pixels follow (cx, cy) along (dx, dy), up to [cap]. */
+    private fun darkRun(cx: Float, cy: Float, dx: Float, dy: Float, cap: Float): Int {
+        var k = 1
+        while (k < cap && isDark((cx + dx * k).roundToInt(), (cy + dy * k).roundToInt())) k++
+        return k - 1
     }
 
     /** How far the dark pixels continue through (cx, cy) in both directions along (dx, dy), up to [cap]. */

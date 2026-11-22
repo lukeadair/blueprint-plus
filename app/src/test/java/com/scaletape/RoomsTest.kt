@@ -12,6 +12,49 @@ class RoomsTest {
             .toList()
     }
 
+    @Test fun shallInNotesDoesNotOutvoteTheLabelHeight() {
+        // searchText starts the match at the word's first letter: 4 notes saying "SHALL" look like 10pt "HALL" labels.
+        val text = "KITCHEN BEDROOM DINING SHALL A SHALL B SHALL C SHALL"
+        val generic = search(text) { 14f }
+        val labels = findRoomLabels(text) { w ->
+            if (w == "HALL") Regex("SHALL").findAll(text).map { TextHit(it.range.first, it.range.first * 20f, 100f, (it.range.first + 5) * 20f - 5f, 110f) }.toList()
+            else generic(w)
+        }
+        assertEquals(listOf("Bedroom", "Dining", "Kitchen"), labels.map { it.name }.sorted())
+    }
+
+    @Test fun numberIsReadWhenSearchStartIsOffByTheLineBreak() {
+        val text = "KITCHEN\r\nBATH 2\r\nDINING"
+        val generic = search(text) { 14f }
+        val labels = findRoomLabels(text) { w -> generic(w).map { if (w == "BATH") it.copy(start = it.start - 2) else it } }
+        assertEquals(listOf("Bath 2", "Dining", "Kitchen"), labels.map { it.name }.sorted())
+    }
+
+    @Test fun utilIsUtilityAndFoyerIsLeftOut() {
+        val text = "UTIL. FOYER KITCHEN"
+        assertEquals(listOf("Kitchen", "Utility"), findRoomLabels(text, search(text) { 14f }).map { it.name }.sorted())
+    }
+
+    /** OCR words laid out left to right at 10pt, 60pt apart, one text line per row. */
+    private fun ocr(vararg lines: String) = lines.flatMapIndexed { row, l ->
+        l.split(' ').mapIndexed { c, w -> OcrWord(w, row, c * 60f, row * 20f, c * 60f + 50f, row * 20f + 10f) }
+    }
+
+    @Test fun ocrFindsRoomNamesAndNumbers() {
+        val labels = ocrLabels(ocr("Kitchen Master Bath", "Bedrm 2 Dining"))
+        assertEquals(listOf("Bedroom 2", "Dining", "Kitchen", "Master Bath"), labels.map { it.name }.sorted())
+        assertEquals(25f, labels.first { it.name == "Kitchen" }.x, 0.01f)
+    }
+
+    @Test fun ocrKeepsOddlySizedLabelsAndDropsSentences() {
+        assertTrue(ocrLabels(emptyList()).isEmpty())
+        // BATH and LAUNDRY come back taller than their neighbors; a sentence naming a room is not a label.
+        val words = ocr("Kitchen Dining", "Hall") + listOf(
+            OcrWord("Bath", 5, 0f, 300f, 30f, 312f), OcrWord("Laundry", 6, 0f, 400f, 50f, 413f),
+        ) + "Remove the old kitchen wall near the dining".split(' ').mapIndexed { c, w -> OcrWord(w, 9, c * 60f, 500f, c * 60f + 50f, 508f) }
+        assertEquals(listOf("Bath", "Dining", "Kitchen", "Laundry"), ocrLabels(words).map { it.name }.sorted())
+    }
+
     @Test fun findsLabelsOnARealFloorPlan() {
         // Real text from the test plan (labels are 10pt), plus a 7pt note that mentions a deck and a porch.
         val text = "GUEST ROOM BEDROOM CLOS CLOS DINING KITCHEN HALL BATH FRONT PORCH BACK PORCHDW N" +

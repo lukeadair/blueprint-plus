@@ -74,6 +74,14 @@ class BoundariesTest {
         assertEquals(300f, r.right, 2.5f)
     }
 
+    @Test fun seedRectNearOneWallSpansTheRoomPastADoor() {
+        // Building Plan 2 laundry: the label is 10 below the top wall and a door fills the top of the left wall. Side
+        // rays kept within 0.8 x 10 of the label would all go through the door; the lower one must use the room below.
+        val room = Rect(100f, 100f, 200f, 200f)
+        val r = seedRect(Offset(150f, 110f), 500f, 0f, 40f, page) { _, to -> !room.contains(to) && !(to.x < 100f && to.y in 100f..130f) }
+        assertEquals(100f, r.left, 2.5f)
+    }
+
     @Test fun separateSplitsOpenPlanRooms() {
         // Finley plan: the hall's seed runs into the open kitchen and holds the kitchen's label; the kitchen and
         // dining seeds each hold the other's label.

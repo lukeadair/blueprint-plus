@@ -64,16 +64,16 @@ fun seedRect(center: Offset, maxLen: Float, inset: Float, spread: Float, page: R
     }
     val l = reach(center, Offset(-1f, 0f)); val u = reach(center, Offset(0f, -1f))
     val r = reach(center, Offset(1f, 0f)); val d = reach(center, Offset(0f, 1f))
-    // Side rays stay inside the room: in a 4' hall, rays 2' off the middle would run outside it.
-    fun side(dir: Offset, middle: Float, acrossReach: Float): Float {
+    // Side rays stay inside the room: in a 4' hall, rays 2' off the middle would run outside it. Each goes as far
+    // as its own side allows ([minus]/[plus]: reach toward -across/+across), so a label near one wall still spans
+    // the room the other way and its rays can't all fit through one door.
+    fun side(dir: Offset, middle: Float, minus: Float, plus: Float): Float {
         val across = Offset(dir.y, dir.x)
-        val s = minOf(spread, 0.8f * acrossReach)
-        return listOf(-s, s).minOf { reach(center + across * it, dir) }.coerceAtMost(middle)
+        return listOf(-minOf(spread, 0.8f * minus), minOf(spread, 0.8f * plus)).minOf { reach(center + across * it, dir) }.coerceAtMost(middle)
     }
-    val h = minOf(u, d); val w = minOf(l, r)
     return Rect(
-        center.x - side(Offset(-1f, 0f), l, h), center.y - side(Offset(0f, -1f), u, w),
-        center.x + side(Offset(1f, 0f), r, h), center.y + side(Offset(0f, 1f), d, w),
+        center.x - side(Offset(-1f, 0f), l, d, u), center.y - side(Offset(0f, -1f), u, r, l),
+        center.x + side(Offset(1f, 0f), r, u, d), center.y + side(Offset(0f, 1f), d, l, r),
     ).intersect(page)
 }
 
