@@ -40,6 +40,16 @@ class ScaleTest {
         eq(1.0 / 48, parseScale(calibratedScale(2.0, 96.0)))
     }
 
+    @Test fun calibrationSnapsToStandardScales() {
+        assertEquals("1/4\" = 1'", calibratedScale(2.0 * 1.015, 96.0)) // 1.5% tap error
+        assertEquals("1/4\" = 1'", calibratedScale(2.0 * 0.985, 96.0))
+        assertEquals("3/16\" = 1'", calibratedScale(1.5, 96.0))
+        assertEquals("1 1/2\" = 1'", calibratedScale(12.0, 96.0))
+        eq(1.0 / 8, parseScale(calibratedScale(12.0, 96.0)))
+        // 5% off (a reduced print) keeps its own scale
+        assertEquals("0.2625\" = 1'", calibratedScale(2.1, 96.0))
+    }
+
     @Test fun measuring() {
         // 1" on a 144 ppi render at 1/4" scale = 4'
         eq(48.0, realInches(144.0, 144.0, 1.0 / 48))

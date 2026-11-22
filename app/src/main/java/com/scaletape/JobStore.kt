@@ -58,6 +58,6 @@ class JobStore(private val context: Context) {
             ?.removeSuffix(".pdf")?.removeSuffix(".PDF")
             ?: "New job"
         val now = System.currentTimeMillis()
-        return Job(id, name, updated = now, created = now).also { save(it) }
+        return Job(id, name, updated = now, created = now, scaleSet = false).also { save(it) }
     }
 }

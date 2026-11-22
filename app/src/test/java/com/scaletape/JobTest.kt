@@ -42,6 +42,8 @@ class JobTest {
     @Test fun olderSavesWithoutCreatedUseUpdated() {
         val old = Job("i", "n", updated = 500L).toJson().replace(Regex(",?\"created\":\\d+"), "")
         assertEquals(500L, jobFromJson(old).created)
+        assertEquals(true, jobFromJson(old.replace(Regex(",?\"scaleSet\":\\w+"), "")).scaleSet)
+        assertEquals(false, jobFromJson(Job("i", "n", scaleSet = false).toJson()).scaleSet)
     }
 
     @Test fun totals() {

@@ -46,8 +46,8 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Place
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.BottomSheetScaffold
 import androidx.compose.material3.HorizontalDivider
@@ -57,13 +57,13 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.IconToggleButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -201,6 +201,7 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
         val (bmp, dpi) = withContext(pdfThread) { r.renderPage(page) }
         bitmap = bmp; ppi = dpi; bitmapPage = page; cursor = null; chain = emptyList(); editIdx = null; draft = null
         if (selected?.page != page) selected = null // kept when a list tap switched to its page
+        if (!job.scaleSet && !calibrating && calibLine == null) editing = true // new job: ask for the scale first
         if (viewSize.width > 0) { // fit page to view
             zoom = minOf(viewSize.width.toFloat() / bmp.width, viewSize.height.toFloat() / bmp.height)
             pan = Offset((viewSize.width - bmp.width * zoom) / 2, (viewSize.height - bmp.height * zoom) / 2)
@@ -263,7 +264,8 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
 
     // First time a page is shown with a valid scale (and again after Redetect, or a scale change if not edited): draw a
     // starting border around each room label, found from the walls. Runs on this page then go by the borders.
-    LaunchedEffect(labels, bitmap, bitmapPage, job.scale, job.seededPages) {
+    LaunchedEffect(labels, bitmap, bitmapPage, job.scale, job.seededPages, job.scaleSet) {
+        if (!job.scaleSet) return@LaunchedEffect // the 1/4" default is often wrong: seeding at it draws bad borders
         val bmp = bitmap ?: return@LaunchedEffect
         val ratio = parseScale(job.scale) ?: return@LaunchedEffect
         val pg = bitmapPage
@@ -391,7 +393,7 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
                         },
                         colors = IconButtonDefaults.iconToggleButtonColors(checkedContainerColor = MaterialTheme.colorScheme.primaryContainer),
                     ) { Icon(Icons.Default.Place, "Edit room borders") }
-                    IconButton(onClick = { editing = true }) { Icon(Icons.Default.Edit, "Edit name and scale") }
+                    IconButton(onClick = { editing = true }) { Icon(Icons.Default.Settings, "Job config") }
                 },
             )
         },
@@ -482,18 +484,12 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
                                 style = MaterialTheme.typography.bodySmall,
                             )
                         }
-                        TextButton(
+                        if (calibrating) TextButton(onClick = { calibrating = false }, Modifier.padding(end = 8.dp)) { Text("Cancel") }
+                        else TextButton(
                             onClick = { update { it.copy(runs = it.runs.dropLast(1)) } },
+                            Modifier.padding(end = 8.dp),
                             enabled = job.runs.isNotEmpty(),
                         ) { Text("Undo") }
-                        TextButton(onClick = { confirmClear = true }, enabled = job.runs.isNotEmpty()) { Text("Clear") }
-                        FilterChip(
-                            selected = calibrating,
-                            onClick = { calibrating = !calibrating },
-                            label = { Text("Calibrate") },
-                            enabled = bitmap != null,
-                            modifier = Modifier.padding(end = 8.dp),
-                        )
                     }
                 }
             }
@@ -744,7 +740,7 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
             },
             confirmButton = {
                 TextButton(onClick = {
-                    update { it.copy(scale = calibratedScale(line.inches(1.0), inches!!)) }
+                    update { it.copy(scale = calibratedScale(line.inches(1.0), inches!!), scaleSet = true) }
                     calibLine = null
                 }, enabled = inches != null) { Text("Set scale") }
             },
@@ -917,20 +913,35 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
         val scaleValid = parseScale(scale) != null
         AlertDialog(
             onDismissRequest = { editing = false },
-            title = { Text("Edit job") },
+            title = { Text("Job Config") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (!job.scaleSet) Text("Set the drawing scale, or calibrate from a known dimension.")
                     OutlinedTextField(value = name, onValueChange = { name = it }, singleLine = true, label = { Text("Name") })
                     OutlinedTextField(
                         value = scale, onValueChange = { scale = it }, singleLine = true, isError = !scaleValid,
                         label = { Text("Scale") },
                         supportingText = { Text("e.g. 1/4\" = 1', 1/8\" = 1', 3/4\" = 1'") },
                     )
+                    OutlinedButton(
+                        onClick = {
+                            editing = false; editRooms = false; editIdx = null; draft = null
+                            cursor = null; chain = emptyList(); selected = null; calibrating = true
+                        },
+                        Modifier.fillMaxWidth(),
+                        enabled = bitmap != null,
+                    ) { Text("Calibrate from a known length") }
+                    TextButton(
+                        onClick = { editing = false; confirmClear = true },
+                        Modifier.fillMaxWidth(),
+                        enabled = job.runs.isNotEmpty(),
+                        colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                    ) { Text("Clear all runs") }
                 }
             },
             confirmButton = {
                 TextButton(
-                    onClick = { update { it.copy(name = name.trim(), scale = scale.trim()) }; editing = false },
+                    onClick = { update { it.copy(name = name.trim(), scale = scale.trim(), scaleSet = true) }; editing = false },
                     enabled = name.isNotBlank() && scaleValid,
                 ) { Text("Save") }
             },

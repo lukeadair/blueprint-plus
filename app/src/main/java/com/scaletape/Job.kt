@@ -75,6 +75,8 @@ data class Job(
     val seededPages: Set<Int> = emptySet(),
     /** Pages whose borders the user changed (moved, added, deleted); a scale change leaves these alone. */
     val editedPages: Set<Int> = emptySet(),
+    /** The user confirmed the scale (Save in Job Config, or a calibration). Rooms aren't seeded before that. */
+    val scaleSet: Boolean = true,
 ) {
     /**
      * Room [old] renamed to [to] (an existing room's name merges the two). Its runs move with it, marked
@@ -109,6 +111,7 @@ fun Job.toJson(): String = JSONObject()
     }))
     .put("seededPages", JSONArray(seededPages.sorted()))
     .put("editedPages", JSONArray(editedPages.sorted()))
+    .put("scaleSet", scaleSet)
     .toString()
 
 fun jobFromJson(json: String): Job {
@@ -149,5 +152,6 @@ fun jobFromJson(json: String): Job {
         },
         seededPages = (0 until (seededArr?.length() ?: 0)).map { seededArr!!.getInt(it) }.toSet(),
         editedPages = (0 until (editedArr?.length() ?: 0)).map { editedArr!!.getInt(it) }.toSet(),
+        scaleSet = o.optBoolean("scaleSet", true), // older saves: already in use, don't prompt
     )
 }

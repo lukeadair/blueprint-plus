@@ -1,6 +1,7 @@
 package com.scaletape
 
 import java.util.Locale
+import kotlin.math.abs
 import kotlin.math.roundToLong
 
 // Pure Kotlin, no Android imports: keep it unit-testable.
@@ -50,9 +51,18 @@ fun parseScale(text: String): Double? {
     return paper / real
 }
 
-/** Scale text for a calibration: [paperInches] on the sheet measured [realInches] in real life. */
-fun calibratedScale(paperInches: Double, realInches: Double): String =
-    String.format(Locale.ROOT, "%.4f\" = 1'", paperInches / realInches * 12)
+// Architectural scales, as paper inches per foot. Neighbours are 25%+ apart, so a 2% snap can't pick the wrong one.
+private val STANDARD_SCALES = listOf("3", "1 1/2", "1", "3/4", "1/2", "3/8", "1/4", "3/16", "1/8", "3/32", "1/16")
+
+/**
+ * Scale text for a calibration: [paperInches] on the sheet measured [realInches] in real life.
+ * Within 2% of a standard scale it is that scale (tap error); a plan printed reduced (~5%+ off) keeps its own.
+ */
+fun calibratedScale(paperInches: Double, realInches: Double): String {
+    val perFoot = paperInches / realInches * 12
+    STANDARD_SCALES.firstOrNull { abs(perFoot / parseNumber(it)!! - 1) <= 0.02 }?.let { return "$it\" = 1'" }
+    return String.format(Locale.ROOT, "%.4f\" = 1'", perFoot)
+}
 
 /** Real-world inches for a line [px] long on a page rendered at [ppi], at scale [ratio]. */
 fun realInches(px: Double, ppi: Double, ratio: Double): Double = px / ppi / ratio
