@@ -197,4 +197,40 @@ class BoundariesTest {
         assertEquals(listOf("Bath"), u.boundaries.map { it.name })
         assertEquals(setOf(1), u.seededPages); assertEquals(setOf(1), u.editedPages)
     }
+
+
+    @Test fun moveEdgeSlidesTheWallSidewaysOnly() {
+        val moved = box("A", 0f, 0f, 100f, 50f).moveEdge(1, Offset(20f, 7f)) // right wall
+        assertEquals(box("A", 0f, 0f, 120f, 50f), moved)
+    }
+
+    @Test fun snapCornerSquaresUpNearNeighbours() {
+        val pts = box("A", 0f, 0f, 100f, 50f).points
+        assertEquals(Offset(100f, 50f), snapCorner(pts, 2, Offset(104f, 47f), 5f))
+        assertEquals(Offset(110f, 50f), snapCorner(pts, 2, Offset(110f, 48f), 5f)) // y snaps, x too far
+        assertEquals(Offset(110f, 60f), snapCorner(pts, 2, Offset(110f, 60f), 5f))
+        assertEquals(Offset(102f, 2f), snapCorner(pts, 2, Offset(102f, 2f), 5f)) // would land on the corner above
+    }
+
+    @Test fun pushAsideCutsTheNeighboursBack() {
+        val all = listOf(
+            box("A", 0f, 0f, 100f, 100f), box("B", 100f, 0f, 200f, 50f), box("C", 100f, 50f, 200f, 100f),
+            box("Other page", 100f, 0f, 200f, 100f, page = 1),
+        )
+        val out = pushAside(all, 0, all[0].moveEdge(1, Offset(30f, 0f)), page)!!
+        assertEquals(box("A", 0f, 0f, 130f, 100f), out[0])
+        assertEquals(box("B", 130f, 0f, 200f, 50f), out[1])
+        assertEquals(box("C", 130f, 50f, 200f, 100f), out[2])
+        assertEquals(all[3], out[3])
+    }
+
+    @Test fun pushAsideRefusesWhatItCantPush() {
+        val a = box("A", 0f, 0f, 100f, 100f)
+        val b = box("B", 100f, 0f, 200f, 100f)
+        assertNull(pushAside(listOf(a, b), 0, a.moveEdge(1, Offset(95f, 0f)), page)) // B would be a sliver
+        val l = RoomBoundary("L", 0, listOf(Offset(100f, 0f), Offset(200f, 0f), Offset(200f, 200f), Offset(150f, 200f), Offset(150f, 100f), Offset(100f, 100f)))
+        assertNull(pushAside(listOf(a, l), 0, a.moveEdge(1, Offset(20f, 0f)), page)) // not a rectangle
+        assertNull(pushAside(listOf(a, b), 0, a.moveEdge(2, Offset(0f, 1000f)), page)) // off the page
+        assertNotNull(pushAside(listOf(a, b), 0, a.moveEdge(3, Offset(10f, 0f)), page)) // nothing in the way
+    }
 }

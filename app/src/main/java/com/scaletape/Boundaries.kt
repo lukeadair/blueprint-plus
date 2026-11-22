@@ -27,6 +27,15 @@ data class RoomBoundary(val name: String, val page: Int, val points: List<Offset
 
     fun moveVertex(i: Int, by: Offset) = copy(points = points.mapIndexed { j, p -> if (j == i) p + by else p })
 
+    /** The wall from vertex [i] to the next slid sideways by the part of [by] across it, so it keeps its length and angle. */
+    fun moveEdge(i: Int, by: Offset): RoomBoundary {
+        val k = (i + 1) % points.size
+        val e = points[k] - points[i]
+        val len2 = e.x * e.x + e.y * e.y
+        val n = if (len2 == 0f) by else by - e * ((by.x * e.x + by.y * e.y) / len2)
+        return copy(points = points.mapIndexed { j, p -> if (j == i || j == k) p + n else p })
+    }
+
     /** A new vertex at the middle of the edge from vertex [i] to the next one. */
     fun splitEdge(i: Int) = if (points.size >= MAX_CORNERS) this else copy(points = points.toMutableList().apply { add(i + 1, (points[i] + points[(i + 1) % points.size]) / 2f) })
 
@@ -107,12 +116,12 @@ fun separate(seeds: List<Pair<Offset, Rect>>, minApart: Float = Float.MAX_VALUE)
 
 /**
  * [r] moved back off [taken]: of the four cuts (one side to [taken]'s facing edge), the biggest that still holds
- * [keep]; null if none does. [r] itself if they don't overlap.
+ * [keep] (any, when it's null); null if none does. [r] itself if they don't overlap.
  */
-fun clipAway(r: Rect, taken: Rect, keep: Offset): Rect? {
+fun clipAway(r: Rect, taken: Rect, keep: Offset?): Rect? {
     if (!(r.left < taken.right && taken.left < r.right && r.top < taken.bottom && taken.top < r.bottom)) return r
     return listOf(r.copy(right = taken.left), r.copy(left = taken.right), r.copy(bottom = taken.top), r.copy(top = taken.bottom))
-        .filter { it.width > 0 && it.height > 0 && keep.x in it.left..it.right && keep.y in it.top..it.bottom }
+        .filter { it.width > 0 && it.height > 0 && (keep == null || (keep.x in it.left..it.right && keep.y in it.top..it.bottom)) }
         .maxByOrNull { it.width * it.height }
 }
 
@@ -155,6 +164,39 @@ fun RoomBoundary.overlaps(o: RoomBoundary): Boolean =
 fun RoomBoundary.selfCrosses(): Boolean {
     val e = edges()
     return e.indices.any { i -> (i + 2 until e.size).any { j -> (i != 0 || j != e.size - 1) && properlyCross(e[i].first, e[i].second, e[j].first, e[j].second) } }
+}
+
+/**
+ * [target] for vertex [i] with its x and y pulled onto a neighbour's when within [tol], so the walls meeting
+ * there come out square.
+ */
+fun snapCorner(points: List<Offset>, i: Int, target: Offset, tol: Float): Offset {
+    val ns = listOf(points[(i + points.size - 1) % points.size], points[(i + 1) % points.size])
+    fun snap(v: Float, of: (Offset) -> Float) = ns.map(of).filter { abs(it - v) <= tol }.minByOrNull { abs(it - v) } ?: v
+    val p = Offset(snap(target.x) { it.x }, snap(target.y) { it.y })
+    return if (p in ns) target else p // snapping both ways onto a neighbour would collapse the wall
+}
+
+private const val MIN_ROOM_PT = 12f // a push may not squeeze a room thinner than this (8" at 1/4" = 1')
+
+private fun RoomBoundary.isRect() = points.size == 4 && edges().all { (a, b) -> abs(a.x - b.x) < EDGE_EPS || abs(a.y - b.y) < EDGE_EPS }
+
+/**
+ * [all] with [all][idx] replaced by [moved] and every room it now overlaps cut back off it, or null when that
+ * can't be done: [moved] crosses itself or leaves [page], or an overlapped room isn't a rectangle or would be cut
+ * (nearly) away.
+ * shortcut: only rectangles are pushed, and against [moved]'s bounding box (over-cuts beside an L); clip real polygons if L rooms need it.
+ */
+fun pushAside(all: List<RoomBoundary>, idx: Int, moved: RoomBoundary, page: Rect): List<RoomBoundary>? {
+    if (moved.selfCrosses() || moved.points.any { it.x !in page.left..page.right || it.y !in page.top..page.bottom }) return null
+    val out = all.toMutableList().also { it[idx] = moved }
+    for ((k, o) in all.withIndex()) { // a cut room only shrinks, so it can't run into a third one
+        if (k == idx || o.page != moved.page || !moved.overlaps(o)) continue
+        if (!o.isRect()) return null
+        val r = clipAway(o.bounds(), moved.bounds(), null)?.takeIf { it.width >= MIN_ROOM_PT && it.height >= MIN_ROOM_PT } ?: return null
+        out[k] = o.copy(points = r.corners())
+    }
+    return out
 }
 
 /**

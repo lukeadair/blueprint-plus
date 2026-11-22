@@ -132,6 +132,10 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
     // Room-border editing: tap a room to edit its border; `draft` is that border while its handles are dragged.
     var editIdx by remember { mutableStateOf<Int?>(null) } // index in job.boundaries
     var draft by remember { mutableStateOf<RoomBoundary?>(null) }
+    // Borders the draft changed (it and the rooms it pushed aside), by index; applied to the job at commit, so
+    // borders added meanwhile (seeding finishing mid-drag) aren't overwritten.
+    var pushed by remember { mutableStateOf<Map<Int, RoomBoundary>>(emptyMap()) }
+    LaunchedEffect(editIdx, draft == null) { pushed = emptyMap() } // a drag cut short by a reset mustn't leave it behind
     // shortcut: saves synchronously on the main thread (small JSON, keeps writes ordered); move to a writer thread if jobs get huge.
     fun update(f: (Job) -> Job) {
         val next = f(job)
@@ -581,29 +585,45 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
                         ratio = ratio, zoom = zoom, pan = pan,
                         cursor = cursor, nodeLoupe = nodeLoupe, chain = chain, calibLine = calibLine, selected = shownSelected,
                         pointColor = if (calibrating) CALIB_COLOR else RUN_COLOR,
-                        rooms = job.boundaries.mapIndexed { i, b -> if (i == editIdx && draft != null) draft!! else b }.filter { it.page == page },
+                        rooms = job.boundaries.mapIndexed { i, b -> if (i == editIdx && draft != null) draft!! else pushed[i] ?: b }.filter { it.page == page },
                         activeRoom = draft, editRooms = editRooms, pxPerPt = ppi / 72f,
                     )
                     if (editRooms) draft?.let { d ->
                         val handle = with(LocalDensity.current) { 22.dp.toPx() }
+                        val snapPx = with(LocalDensity.current) { 12.dp.toPx() }
                         fun commit() {
+                            val p = pushed.also { pushed = emptyMap() }
                             val i = editIdx ?: return
                             val b = draft ?: return
-                            if (job.boundaries.getOrNull(i) == b) return
-                            update { j -> j.copy(boundaries = j.boundaries.mapIndexed { k, old -> if (k == i) b else old }, editedPages = j.editedPages + b.page).reassignRooms() }
+                            val changed = p + (i to b)
+                            if (changed.all { (k, v) -> job.boundaries.getOrNull(k) == v }) return
+                            update { j -> j.copy(boundaries = j.boundaries.mapIndexed { k, old -> changed[k] ?: old }, editedPages = j.editedPages + b.page).reassignRooms() }
                             if (selected != null && selected !in job.runs) selected = null
                         }
                         val n = d.points.size
                         val pxPerPt = ppi / 72f
                         val pageRect = Rect(0f, 0f, (bitmap?.width ?: 0) / pxPerPt, (bitmap?.height ?: 0) / pxPerPt)
-                        /** Stays a simple shape, off the other rooms on this page. */
-                        fun fits(b: RoomBoundary) = !b.selfCrosses() &&
-                            job.boundaries.withIndex().none { (k, o) -> k != editIdx && o.page == b.page && b.overlaps(o) }
-                        if (n < MAX_CORNERS) for (i in 0 until n) { // tap the dot between two corners to add a corner there
+                        /** Takes [b] if it's a simple shape on the page, pushing overlapped rooms aside (from where they were before this drag). */
+                        fun tryMove(b: RoomBoundary) {
+                            pushAside(job.boundaries, editIdx ?: return, b, pageRect)?.let { out -> pushed = out.withIndex().filter { (k, o) -> o != job.boundaries[k] }.associate { (k, o) -> k to o }; draft = b }
+                        }
+                        for (i in 0 until n) { // drag the dot between two corners to move that wall; tap it to add a corner there
                             val m = (d.points[i] + d.points[(i + 1) % n]) / 2f * (ppi / 72f) * zoom + pan
                             Box(
                                 Modifier.offset { IntOffset((m.x - handle).roundToInt(), (m.y - handle).roundToInt()) }.size(44.dp)
-                                    .semantics { contentDescription = "Add corner" }
+                                    .semantics { contentDescription = "Wall" }
+                                    .pointerInput(i, n) {
+                                        var total = Offset.Zero
+                                        var start: RoomBoundary? = null
+                                        detectDragGestures(
+                                            onDragStart = { total = Offset.Zero; start = draft },
+                                            onDragEnd = { commit() }, onDragCancel = { commit() },
+                                        ) { change, drag ->
+                                            change.consume()
+                                            total += drag / zoom / (ppi / 72f)
+                                            start?.let { tryMove(it.moveEdge(i, total)) }
+                                        }
+                                    }
                                     .pointerInput(i, n) { detectTapGestures { draft = draft?.splitEdge(i); commit() } },
                             )
                         }
@@ -623,12 +643,12 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
                                             change.consume()
                                             target += drag / zoom / (ppi / 72f)
                                             val cur = draft ?: return@detectDragGestures
-                                            val moved = cur.copy(points = cur.points.mapIndexed { k, p -> if (k == i) target.clampTo(pageRect) else p })
-                                            if (fits(moved)) draft = moved
+                                            val p = snapCorner(cur.points, i, target.clampTo(pageRect), snapPx / zoom / (ppi / 72f))
+                                            tryMove(cur.copy(points = cur.points.mapIndexed { k, q -> if (k == i) p else q }))
                                         }
                                     }
                                     .pointerInput(i, n) {
-                                        detectTapGestures(onLongPress = { draft?.withoutVertex(i)?.takeIf { fits(it) }?.let { draft = it; commit() } })
+                                        detectTapGestures(onLongPress = { draft?.withoutVertex(i)?.let { tryMove(it); commit() } })
                                     },
                             )
                         }
@@ -976,11 +996,11 @@ private fun PlanCanvas(
             val mid = r.points.reduce { a, b -> a + b } / r.points.size.toFloat() * pxPerPt * zoom + pan
             drawContext.canvas.nativeCanvas.drawText(r.name, mid.x, mid.y, roomPaint)
         }
-        if (editRooms) activeRoom?.let { r -> // corner handles; the small dots between them add a corner
+        if (editRooms) activeRoom?.let { r -> // corner handles; the small dots between them move a wall or add a corner
             val color = roomColor(r.name)
             r.points.forEachIndexed { i, v ->
                 val next = r.points[(i + 1) % r.points.size]
-                if (r.points.size < MAX_CORNERS) drawCircle(color, 4.dp.toPx(), (v + next) / 2f * pxPerPt * zoom + pan)
+                drawCircle(color, 4.dp.toPx(), (v + next) / 2f * pxPerPt * zoom + pan)
                 (v * pxPerPt * zoom + pan).let {
                     drawCircle(Color.White, 9.dp.toPx(), it)
                     drawCircle(color, 9.dp.toPx(), it, style = Stroke(3.dp.toPx()))
