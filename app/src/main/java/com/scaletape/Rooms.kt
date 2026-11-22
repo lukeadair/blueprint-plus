@@ -79,7 +79,16 @@ fun findRoomLabels(pageText: String, search: (String) -> List<TextHit>): List<Ro
     return hits
         // Tight: search boxes are whole points, so a 6pt note can measure 8 next to 10pt labels.
         .filter { abs(textHeight.getValue(it.second) - commonHeight) <= maxOf(1f, commonHeight * 0.12f) }
+        .filterNot { notACabinetRoom(it.first) }
         .map { (name, h) -> RoomLabel(name, (h.left + h.right) / 2, (h.top + h.bottom) / 2, (h.right - h.left) / 2, (h.bottom - h.top) / 2) }
+}
+
+// Closets worth a room of their own: master/his/her and walk-ins. Other closets and every porch are dropped
+// after the height filter, so their words still claim text and count toward the common label height.
+private val KEPT_CLOSET = Regex("""^(?:(?:Master|Mstr|Mst|Primary|His|Hers?|Walk-in)\b|M\.)""")
+private fun notACabinetRoom(name: String): Boolean {
+    val base = name.replace(Regex("""\s+\d+$"""), "")
+    return "Porch" in base || base.endsWith("Closet") && !KEPT_CLOSET.containsMatchIn(base)
 }
 
 /** `"GUEST ROOM"` -> `Guest Room`; `"CLOS"` -> `Closet`; `"BEDROOM"` followed by `" 2"` -> `Bedroom 2`. */

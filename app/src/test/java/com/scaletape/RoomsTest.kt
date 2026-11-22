@@ -19,9 +19,9 @@ class RoomsTest {
         val noteStart = text.indexOf("REMOVE")
         val labels = findRoomLabels(text, search(text) { i -> if (i >= noteStart) 7f else 10f })
         // Not: Room (inside Guest Room), Porch (inside Front Porch), Back Porch (glued to "DW"), Deck, the
-        // note's Porch (7pt), or Closet from "CLOSED".
+        // note's Porch (7pt), or Closet from "CLOSED". Front Porch and the plain closets are found but dropped.
         assertEquals(
-            listOf("Bath", "Bedroom", "Closet", "Closet", "Dining", "Front Porch", "Guest Room", "Hall", "Kitchen"),
+            listOf("Bath", "Bedroom", "Dining", "Guest Room", "Hall", "Kitchen"),
             labels.map { it.name }.sorted(),
         )
     }
@@ -36,13 +36,14 @@ class RoomsTest {
     }
 
     @Test fun labelOnTwoLines() {
-        // Test plan A on the phone: "FRONT PORCH" comes back as one 24pt box (both lines); "FRONT" alone is 10pt.
-        val text = "GUEST ROOM KITCHEN FRONT PORCH HALL"
-        val at = text.indexOf("FRONT PORCH")
+        // Test plan A on the phone: "FRONT PORCH" came back as one 24pt box (both lines); "FRONT" alone is 10pt.
+        // Porches are dropped now, so this uses a kept two-word name.
+        val text = "GUEST ROOM KITCHEN MASTER CLOSET HALL"
+        val at = text.indexOf("MASTER CLOSET")
         val labels = findRoomLabels(text) { word ->
-            search(text) { 10f }(word).map { h -> if (h.start == at && word == "FRONT PORCH") h.copy(bottom = h.top + 24f) else h }
+            search(text) { 10f }(word).map { h -> if (h.start == at && word == "MASTER CLOSET") h.copy(bottom = h.top + 24f) else h }
         }
-        assertEquals(listOf("Front Porch", "Guest Room", "Hall", "Kitchen"), labels.map { it.name }.sorted())
+        assertEquals(listOf("Guest Room", "Hall", "Kitchen", "Master Closet"), labels.map { it.name }.sorted())
     }
 
     @Test fun labelOnTwoLinesStoredOutOfOrder() {
@@ -65,6 +66,16 @@ class RoomsTest {
         assertEquals(listOf("Kitchen"), findRoomLabels(text) { listOfNotNull(reversed[it]) }.map { it.name })
     }
 
+    @Test fun porchesAndPlainClosetsAreDropped() {
+        val text = "CLOSET ; CL 1 ; GIRLS CLOSET ; BACK PORCH ; M. CLOSET ; MASTER CLOSET ; HIS CLOSET ; HERS CLOSET ;" +
+            " PRIMARY CLOSET ; WIC ; KITCHEN"
+        val names = findRoomLabels(text, search(text) { 10f }).map { it.name }.sorted()
+        assertEquals(
+            listOf("Hers Closet", "His Closet", "Kitchen", "M. Closet", "Master Closet", "Primary Closet", "Walk-in Closet"),
+            names,
+        )
+    }
+
     @Test fun numberedRooms() {
         val text = "BEDROOM 2 BEDROOM #3 BEDROOM"
         val names = findRoomLabels(text, search(text) { 10f }).map { it.name }
@@ -75,8 +86,8 @@ class RoomsTest {
         // Labels from test plan B.
         val text = "M.BTH BEDRM 2 BTH 2 CL 1 LNDY/MUD PDR FLEX HALL 1 KITCHEN CL OF WALL"
         val names = findRoomLabels(text, search(text) { 10f }).map { it.name }.sorted()
-        assertEquals( // the bare "CL" (centerline) is skipped
-            listOf("Bath 2", "Bedroom 2", "Closet 1", "Flex", "Hall 1", "Kitchen", "Laundry", "Master Bath", "Powder"),
+        assertEquals( // the bare "CL" (centerline) is skipped; "CL 1" is a plain closet, dropped
+            listOf("Bath 2", "Bedroom 2", "Flex", "Hall 1", "Kitchen", "Laundry", "Master Bath", "Powder"),
             names,
         )
     }
