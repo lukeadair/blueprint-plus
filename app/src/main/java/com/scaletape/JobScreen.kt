@@ -17,6 +17,7 @@ import kotlin.coroutines.resumeWithException
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectDragGestures
@@ -44,6 +45,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Place
 import androidx.compose.material3.AlertDialog
@@ -56,6 +58,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
@@ -101,6 +104,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -164,6 +168,7 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
     var editing by remember { mutableStateOf(false) } // name + scale dialog
     var addingRoom by remember { mutableStateOf(false) }
     var deletingRoom by remember { mutableStateOf<String?>(null) }
+    var deletingBorder by remember { mutableStateOf<Int?>(null) } // index into job.boundaries
     var renamingRoom by remember { mutableStateOf<String?>(null) }
     var selected by remember { mutableStateOf<Run?>(null) } // tapped run, offered for deletion
     // While a node of `selected` is dragged: (the saved run, the run as dragged). Saved when the drag ends.
@@ -409,55 +414,62 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
                             when {
                                 live != null -> live
                                 c == null -> "Tap the plan to continue"
-                                chain.isEmpty() -> "Tap ≡ to set start"
-                                else -> "Tap ≡ to add a point"
+                                else -> ""
                             },
                             Modifier.weight(1f).padding(horizontal = 4.dp),
                             style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                            textAlign = TextAlign.Center,
                         )
                         Button(onClick = { setPoint() }, enabled = c != null && movedEnough(c), contentPadding = PaddingValues(horizontal = 12.dp)) { Text("Set point") }
                         if (!calibrating) Button(onClick = { finishChain() }, Modifier.padding(start = 6.dp, end = 8.dp), enabled = chain.size >= 2, contentPadding = PaddingValues(horizontal = 12.dp)) { Text("Done") }
                     } else if (editRooms) {
                         val idx = editIdx
-                        TextButton(onClick = { if (idx != null) { editIdx = null; draft = null } else editRooms = false }) { Text("Done") }
-                        Text(
-                            draft?.name ?: "Tap a room",
-                            Modifier.weight(1f).padding(horizontal = 8.dp),
-                            style = MaterialTheme.typography.titleMedium,
-                        )
-                        if (idx == null) {
-                            TextButton(onClick = { redetecting = true }, enabled = bitmap != null) { Text("Redetect") }
-                            TextButton(onClick = { addingRoom = true }, enabled = bitmap != null) { Text("Add room") }
-                        }
+                        val name = draft?.name
+                        if (idx == null) Button(
+                            onClick = { redetecting = true }, Modifier.padding(start = 8.dp), enabled = bitmap != null,
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.tertiary,
+                                contentColor = MaterialTheme.colorScheme.onTertiary,
+                            ),
+                        ) { Text("Redetect") }
                         else Button(
-                            onClick = {
-                                update { j -> j.copy(boundaries = j.boundaries.filterIndexed { k, _ -> k != idx }, editedPages = j.editedPages + page).reassignRooms() }
-                                editIdx = null; draft = null
-                                if (selected != null && selected !in job.runs) selected = null
-                            },
+                            onClick = { deletingBorder = idx },
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = MaterialTheme.colorScheme.error,
                                 contentColor = MaterialTheme.colorScheme.onError,
                             ),
-                            modifier = Modifier.padding(end = 8.dp),
+                            modifier = Modifier.padding(start = 8.dp),
                         ) { Text("Delete") }
+                        Text(
+                            name ?: "",
+                            Modifier.weight(1f)
+                                .then(if (name != null) Modifier.clickable { renamingRoom = name } else Modifier)
+                                .padding(horizontal = 8.dp, vertical = 12.dp),
+                            style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                            textAlign = TextAlign.Center,
+                        )
+                        Button(
+                            onClick = { if (idx != null) { editIdx = null; draft = null } else editRooms = false },
+                            Modifier.padding(end = 8.dp),
+                        ) { Text("Done") }
                     } else if (selected != null) {
                         val sel = selected!!
-                        TextButton(onClick = { selected = null }) { Text("Done") }
-                        Text(
-                            listOfNotNull(sel.room?.ifEmpty { null }, ratio?.let { formatFeetInches((shownSelected ?: sel).inches(it)) })
-                                .joinToString(" · ").ifEmpty { "Selected run" },
-                            Modifier.weight(1f).padding(horizontal = 8.dp),
-                            style = MaterialTheme.typography.titleMedium,
-                        )
                         Button(
                             onClick = { update { it.copy(runs = it.runs - sel) }; selected = null },
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = MaterialTheme.colorScheme.error,
                                 contentColor = MaterialTheme.colorScheme.onError,
                             ),
-                            modifier = Modifier.padding(end = 8.dp),
+                            modifier = Modifier.padding(start = 8.dp),
                         ) { Text("Delete") }
+                        Text(
+                            listOfNotNull(sel.room?.ifEmpty { null }, ratio?.let { formatFeetInches((shownSelected ?: sel).inches(it)) })
+                                .joinToString(" · ").ifEmpty { "Selected run" },
+                            Modifier.weight(1f).padding(horizontal = 8.dp),
+                            style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                            textAlign = TextAlign.Center,
+                        )
+                        Button(onClick = { selected = null }, Modifier.padding(end = 8.dp)) { Text("Done") }
                     } else {
                         Column(Modifier.weight(1f).padding(start = 16.dp)) {
                             Text(
@@ -709,6 +721,11 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
                         )
                     }
                 }
+                if (editRooms && editIdx == null && bitmap != null) FloatingActionButton(
+                    onClick = { addingRoom = true },
+                    Modifier.align(Alignment.BottomEnd).padding(16.dp),
+                    shape = CircleShape,
+                ) { Icon(Icons.Default.Add, "Add room") }
             }
         }
     }
@@ -841,6 +858,25 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
                 ) { Text(if (existing != null) "Merge" else "Rename") }
             },
             dismissButton = { TextButton(onClick = { renamingRoom = null }) { Text("Cancel") } },
+        )
+    }
+
+    deletingBorder?.let { idx ->
+        val border = job.boundaries.getOrNull(idx)
+        if (border == null) { deletingBorder = null; return@let }
+        AlertDialog(
+            onDismissRequest = { deletingBorder = null },
+            title = { Text("Delete ${border.name} border?") },
+            text = { Text("Its runs go to the room around them, or Unassigned. No measurements are deleted.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    update { j -> j.copy(boundaries = j.boundaries.filterIndexed { k, _ -> k != idx }, editedPages = j.editedPages + border.page).reassignRooms() }
+                    editIdx = null; draft = null
+                    if (selected != null && selected !in job.runs) selected = null
+                    deletingBorder = null
+                }) { Text("Delete") }
+            },
+            dismissButton = { TextButton(onClick = { deletingBorder = null }) { Text("Cancel") } },
         )
     }
 
