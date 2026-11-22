@@ -13,7 +13,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Menu
@@ -62,7 +61,6 @@ fun RunList(
     onMove: (index: Int, room: String) -> Unit,
     extraRooms: List<String>,
     onAddRoom: () -> Unit,
-    onDeleteRoom: (room: String) -> Unit,
     onRenameRoom: (room: String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -132,9 +130,6 @@ fun RunList(
                     trailingContent = {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             ratio?.let { r -> Text("%.2f LF".format(items.sumOf { it.value.inches(r) } / 12), style = MaterialTheme.typography.titleMedium) }
-                            if (room.isNotEmpty()) IconButton(onClick = { onDeleteRoom(room) }) {
-                                Icon(Icons.Default.Close, "Delete room $room")
-                            }
                         }
                     },
                     colors = ListItemDefaults.colors(containerColor = dropBg ?: MaterialTheme.colorScheme.surfaceContainerHigh),

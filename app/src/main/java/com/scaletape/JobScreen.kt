@@ -36,6 +36,7 @@ import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.offset
@@ -180,9 +181,8 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
     var confirmClear by remember { mutableStateOf(false) }
     var editing by remember { mutableStateOf(false) } // name + scale dialog
     var addingRoom by remember { mutableStateOf(false) }
-    var deletingRoom by remember { mutableStateOf<String?>(null) }
-    var deletingBorder by remember { mutableStateOf<Int?>(null) } // index into job.boundaries
     var renamingRoom by remember { mutableStateOf<String?>(null) }
+    var deletingRoom by remember { mutableStateOf<String?>(null) }
     var selected by remember { mutableStateOf<Run?>(null) } // tapped run, offered for deletion
     // While a node of `selected` is dragged: (the saved run, the run as dragged). Saved when the drag ends.
     var nodeDraft by remember { mutableStateOf<Pair<Run, Run>?>(null) }
@@ -459,7 +459,7 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
                             ),
                         ) { Text("Redetect") }
                         else Button(
-                            onClick = { deletingBorder = idx },
+                            onClick = { deletingRoom = name },
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = MaterialTheme.colorScheme.error,
                                 contentColor = MaterialTheme.colorScheme.onError,
@@ -536,7 +536,6 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
                 modifier = Modifier.heightIn(max = listMaxHeight),
                 extraRooms = (job.rooms + job.boundaries.map { it.name }).distinct(),
                 onAddRoom = { addingRoom = true },
-                onDeleteRoom = { deletingRoom = it },
                 onRenameRoom = { renamingRoom = it },
                 onTap = { i ->
                     // Highlight it on the plan (switching page if needed) and drop the sheet to show it.
@@ -877,38 +876,27 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
                     },
                 )
             },
+            // One full-width row so Delete sits on the left; AlertDialog's own slots both align right.
             confirmButton = {
-                TextButton(
-                    onClick = {
-                        val to = existing ?: target
-                        if (selected?.room == old) selected = null
-                        editIdx = null; draft = null
-                        update(true) { it.renameRoom(old, to) }
-                        renamingRoom = null
-                    },
-                    enabled = target.isNotEmpty() && !reserved && target != old,
-                ) { Text(if (existing != null) "Merge" else "Rename") }
+                Row(Modifier.fillMaxWidth()) {
+                    TextButton(
+                        onClick = { renamingRoom = null; deletingRoom = old },
+                        colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                    ) { Text("Delete") }
+                    Spacer(Modifier.weight(1f))
+                    TextButton(onClick = { renamingRoom = null }) { Text("Cancel") }
+                    TextButton(
+                        onClick = {
+                            val to = existing ?: target
+                            if (selected?.room == old) selected = null
+                            editIdx = null; draft = null
+                            update(true) { it.renameRoom(old, to) }
+                            renamingRoom = null
+                        },
+                        enabled = target.isNotEmpty() && !reserved && target != old,
+                    ) { Text(if (existing != null) "Merge" else "Rename") }
+                }
             },
-            dismissButton = { TextButton(onClick = { renamingRoom = null }) { Text("Cancel") } },
-        )
-    }
-
-    deletingBorder?.let { idx ->
-        val border = job.boundaries.getOrNull(idx)
-        if (border == null) { deletingBorder = null; return@let }
-        AlertDialog(
-            onDismissRequest = { deletingBorder = null },
-            title = { Text("Delete ${border.name} border?") },
-            text = { Text("Its runs go to the room around them, or Unassigned. No measurements are deleted.") },
-            confirmButton = {
-                TextButton(onClick = {
-                    update(true) { j -> j.copy(boundaries = j.boundaries.filterIndexed { k, _ -> k != idx }, editedPages = j.editedPages + border.page).reassignRooms() }
-                    editIdx = null; draft = null
-                    if (selected != null && selected !in job.runs) selected = null
-                    deletingBorder = null
-                }) { Text("Delete") }
-            },
-            dismissButton = { TextButton(onClick = { deletingBorder = null }) { Text("Cancel") } },
         )
     }
 
