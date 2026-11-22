@@ -109,7 +109,7 @@ import kotlin.math.roundToInt
 private val pdfThread = Dispatchers.IO.limitedParallelism(1)
 
 private const val MAX_SIDE_PX = 4096f // caps bitmap memory (~64 MB) for big sheets
-private const val LOUPE_MAG = 4f // loupe magnification relative to the current zoom
+private const val LOUPE_MAG = 2.5f // loupe magnification relative to the current zoom
 private val RUN_COLOR = Color(0xFFD32F2F) // fixed, not themed: drawn over white paper
 private val CALIB_COLOR = Color(0xFF1565C0)
 private val SELECTED_COLOR = Color(0xFFFF6F00)
@@ -153,6 +153,10 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
     var deletingRoom by remember { mutableStateOf<String?>(null) }
     var renamingRoom by remember { mutableStateOf<String?>(null) }
     var selected by remember { mutableStateOf<Run?>(null) } // tapped run, offered for deletion
+    // While a node of `selected` is dragged: (the saved run, the run as dragged). Saved when the drag ends.
+    var nodeDraft by remember { mutableStateOf<Pair<Run, Run>?>(null) }
+    var nodeLoupe by remember { mutableStateOf<Offset?>(null) } // page point under the finger while a node is dragged
+    val shownSelected = nodeDraft?.takeIf { it.first == selected }?.second ?: selected
     var editRooms by remember { mutableStateOf(false) }
     var redetecting by remember { mutableStateOf(false) } // confirm before replacing this page's borders
     var bitmapPage by remember { mutableIntStateOf(-1) } // the page `bitmap` shows (it lags `page` while rendering)
@@ -273,8 +277,11 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
     val total = job.totalInches()
 
     val scope = rememberCoroutineScope()
+    // A point must sit a little away from the last one, so tapping Set twice can't add a duplicate node.
+    val minMovePx = with(LocalDensity.current) { 8.dp.toPx() }
+    fun movedEnough(c: Offset) = chain.lastOrNull()?.let { (c - it).getDistance() * zoom >= minMovePx } ?: true
     fun setPoint() {
-        val c = cursor ?: return
+        val c = cursor?.takeIf { movedEnough(it) } ?: return
         chain = chain + c // magnifier stays open for the next point
         if (calibrating && chain.size == 2) { calibLine = Run(page, chain[0], chain[1], ppi); calibrating = false; chain = emptyList(); cursor = null }
     }
@@ -283,6 +290,18 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
         val run = Run(page, chain[0], chain[1], ppi, extra = chain.drop(2))
         update { it.copy(runs = it.runs + run).reassignRooms() }; scope.launch { refreshRooms(onlyNew = true) }
         chain = emptyList(); cursor = null
+    }
+
+    fun commitNode(base: Run) {
+        val moved = nodeDraft?.takeIf { it.first == base }?.second
+        nodeDraft = null
+        if (moved == null || moved == base) return
+        var saved = moved
+        update { j ->
+            val i = j.runs.indexOf(base)
+            if (i < 0) j else j.copy(runs = j.runs.mapIndexed { k, r -> if (k == i) moved else r }).reassignRooms().also { saved = it.runs[i] }
+        }
+        selected = saved
     }
 
     val sheet = rememberBottomSheetScaffoldState()
@@ -362,7 +381,7 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
                             Modifier.weight(1f).padding(horizontal = 4.dp),
                             style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis,
                         )
-                        Button(onClick = { setPoint() }, enabled = c != null, contentPadding = PaddingValues(horizontal = 12.dp)) { Text("Set point") }
+                        Button(onClick = { setPoint() }, enabled = c != null && movedEnough(c), contentPadding = PaddingValues(horizontal = 12.dp)) { Text("Set point") }
                         if (!calibrating) Button(onClick = { finishChain() }, Modifier.padding(start = 6.dp, end = 8.dp), enabled = chain.size >= 2, contentPadding = PaddingValues(horizontal = 12.dp)) { Text("Done") }
                     } else if (editRooms) {
                         val idx = editIdx
@@ -392,7 +411,7 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
                         val sel = selected!!
                         TextButton(onClick = { selected = null }) { Text("Done") }
                         Text(
-                            listOfNotNull(sel.room?.ifEmpty { null }, ratio?.let { formatFeetInches(sel.inches(it)) })
+                            listOfNotNull(sel.room?.ifEmpty { null }, ratio?.let { formatFeetInches((shownSelected ?: sel).inches(it)) })
                                 .joinToString(" · ").ifEmpty { "Selected run" },
                             Modifier.weight(1f).padding(horizontal = 8.dp),
                             style = MaterialTheme.typography.titleMedium,
@@ -523,9 +542,9 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
                 } else {
                     PlanCanvas(
                         image = remember(bmp) { bmp.asImageBitmap() },
-                        runs = job.runs.filter { it.page == page },
+                        runs = job.runs.filter { it.page == page }.map { if (it == selected) shownSelected!! else it },
                         ratio = ratio, zoom = zoom, pan = pan,
-                        cursor = cursor, chain = chain, calibLine = calibLine, selected = selected,
+                        cursor = cursor, nodeLoupe = nodeLoupe, chain = chain, calibLine = calibLine, selected = shownSelected,
                         pointColor = if (calibrating) CALIB_COLOR else RUN_COLOR,
                         rooms = job.boundaries.mapIndexed { i, b -> if (i == editIdx && draft != null) draft!! else b }.filter { it.page == page },
                         activeRoom = draft, editRooms = editRooms, pxPerPt = ppi / 72f,
@@ -575,6 +594,30 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
                                     }
                                     .pointerInput(i, n) {
                                         detectTapGestures(onLongPress = { draft?.withoutVertex(i)?.takeIf { fits(it) }?.let { draft = it; commit() } })
+                                    },
+                            )
+                        }
+                    }
+                    val sel = selected
+                    if (sel != null && sel.page == page && !editRooms && cursor == null && chain.isEmpty() && !calibrating) {
+                        // Drag a node of the selected run to move it; the run is saved when the finger lifts.
+                        val handle = with(LocalDensity.current) { 22.dp.toPx() }
+                        val shown = shownSelected ?: sel
+                        shown.points().forEachIndexed { i, pt ->
+                            val v = pt * zoom + pan
+                            Box(
+                                Modifier.offset { IntOffset((v.x - handle).roundToInt(), (v.y - handle).roundToInt()) }.size(44.dp)
+                                    .semantics { contentDescription = "Run point" }
+                                    .pointerInput(sel, i) {
+                                        var target = Offset.Zero
+                                        detectDragGestures(
+                                            onDragStart = { target = (nodeDraft?.takeIf { it.first == sel }?.second ?: sel).points()[i] },
+                                            onDragEnd = { nodeLoupe = null; commitNode(sel) }, onDragCancel = { nodeLoupe = null; commitNode(sel) },
+                                        ) { change, drag ->
+                                            change.consume()
+                                            target = (target + drag / zoom).clampTo(Rect(0f, 0f, (bitmap?.width ?: 0).toFloat(), (bitmap?.height ?: 0).toFloat()))
+                                            nodeDraft = sel to sel.withPoint(i, target); nodeLoupe = target
+                                        }
                                     },
                             )
                         }
@@ -819,6 +862,7 @@ private fun PlanCanvas(
     zoom: Float,
     pan: Offset,
     cursor: Offset?,
+    nodeLoupe: Offset?, // a run's node being dragged: the loupe floats above it
     chain: List<Offset>,
     calibLine: Run?,
     selected: Run?,
@@ -863,6 +907,10 @@ private fun PlanCanvas(
             runs.forEach {
                 val sel = it == selected
                 it.points().zipWithNext().forEach { (p, q) -> drawLine(if (sel) SELECTED_COLOR else RUN_COLOR, p, q, (if (sel) 6 else 3).dp.toPx() * px) }
+                if (sel) it.points().forEach { p -> // node handles, like a room border's corners
+                    drawCircle(Color.White, 9.dp.toPx() * px, p)
+                    drawCircle(SELECTED_COLOR, 9.dp.toPx() * px, p, style = Stroke(3.dp.toPx() * px))
+                }
             }
             calibLine?.let { drawLine(CALIB_COLOR, it.a, it.b, 3.dp.toPx() * px) }
             chain.zipWithNext().forEach { (p, q) -> drawLine(pointColor, p, q, 2.dp.toPx() * px) }
@@ -898,19 +946,22 @@ private fun PlanCanvas(
             }
         }
 
-        val c = cursor ?: return@Canvas
+        val c = cursor ?: nodeLoupe ?: return@Canvas
         val p = c * zoom + pan // the point, on screen; the loupe is centered on it
         val geo = Geometry(p, density.density)
         val r = geo.loupeR
+        // Dragging a node, the finger is on the point, so the loupe floats above it instead.
+        val lc = if (cursor != null) p else Offset(p.x.coerceIn(r, size.width - r), (p.y - 2.2f * r).coerceAtLeast(r + 4.dp.toPx()))
 
         // Loupe: what's directly under it, magnified, with crosshairs on the point.
         val m = (zoom * LOUPE_MAG).coerceAtMost(maxOf(zoom, 12f))
-        clipPath(Path().apply { addOval(Rect(p, r)) }) {
+        clipPath(Path().apply { addOval(Rect(lc, r)) }) {
             drawRect(Color.White)
-            withTransform({ translate(p.x - c.x * m, p.y - c.y * m); scale(m, m, Offset.Zero) }) { plan(1 / m) }
-            crosshair(p, r, pointColor)
+            withTransform({ translate(lc.x - c.x * m, lc.y - c.y * m); scale(m, m, Offset.Zero) }) { plan(1 / m) }
+            crosshair(lc, r, pointColor)
         }
-        drawCircle(outline, r, p, style = Stroke(2.dp.toPx()))
+        drawCircle(outline, r, lc, style = Stroke(2.dp.toPx()))
+        if (cursor == null) return@Canvas
 
         // Grabber: a drag handle (three bars) attached to the loupe, so the finger never covers the point.
         val g = geo.grabber

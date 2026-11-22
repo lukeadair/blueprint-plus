@@ -63,4 +63,11 @@ class JobTest {
         assertEquals(job, jobFromJson(job.toJson()))
         assertEquals(emptyList<Offset>(), jobFromJson(job.toJson()).runs[1].extra) // no "pts" key when not chained
     }
+
+    @Test fun withPointMovesOneNode() {
+        assertEquals(Offset(0f, 0f), corner.withPoint(0, Offset(0f, 0f)).a)
+        assertEquals(Offset(0f, 0f), corner.withPoint(1, Offset(0f, 0f)).b)
+        assertEquals(corner.copy(extra = listOf(Offset(1f, 2f))), corner.withPoint(2, Offset(1f, 2f)))
+        assertEquals(Offset(154f, 164f), corner.withPoint(0, Offset(0f, 0f)).points().last()) // others untouched
+    }
 }

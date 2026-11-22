@@ -16,6 +16,13 @@ data class Run(
 ) {
     fun points(): List<Offset> = listOf(a, b) + extra
 
+    /** This run with the point at [i] (0 = [a], 1 = [b], then [extra]) moved to [p]. */
+    fun withPoint(i: Int, p: Offset): Run = when (i) {
+        0 -> copy(a = p)
+        1 -> copy(b = p)
+        else -> copy(extra = extra.mapIndexed { k, q -> if (k == i - 2) p else q })
+    }
+
     private fun segments() = points().zipWithNext()
 
     /** Midpoint of the longest segment, in page pixels: where the run's label sits and its room is picked. */
