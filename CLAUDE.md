@@ -58,5 +58,3 @@ Release signing uses the `CN=Luke Adair` key shared with sixteenth-plus (`keysto
 - Keep it lean: no new dependencies, DI, ViewModel or navigation library unless a feature truly needs it.
 - App id is `com.lukeadair.blueprintplus` (changed from `com.scaletape`; the Kotlin package and `namespace` stay `com.scaletape`). Never change `applicationId` as a side effect.
 
-## TODO
-- Rename the folder and GitHub repo to blueprint-plus. (App name, README and Gradle project name are already "Blueprint+".)
