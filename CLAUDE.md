@@ -1,4 +1,4 @@
-# Scale Tape
+# Blueprint+
 
 Android takeoff tool for cabinet quotes: open a PDF plan, set the drawing scale
 (usually `1/4" = 1'`), tap two points per run, and it totals the linear footage.
@@ -56,8 +56,7 @@ Release signing uses the `CN=Luke Adair` key shared with sixteenth-plus (`keysto
 - Accuracy is the product: a wrong total means a wrong quote. Check edge cases (fractions, feet-inches, `1'-0"`, locale decimals) when touching `Scale.kt`.
 - Follow Material 3 components and color roles (`MaterialTheme.colorScheme`); marks drawn on the plan use fixed colors because the paper is always white.
 - Keep it lean: no new dependencies, DI, ViewModel or navigation library unless a feature truly needs it.
-- Package/app id is `com.scaletape`. Never change `applicationId` as a side effect.
+- App id is `com.lukeadair.blueprintplus` (changed from `com.scaletape`; the Kotlin package and `namespace` stay `com.scaletape`). Never change `applicationId` as a side effect.
 
 ## TODO
-- Rename to blueprint-plus (folder and GitHub repo); brand as "Blueprint+".
-- Change package/app id to `com.lukeadair.blueprintplus`. Hyphens aren't allowed in Android package names, so `com.lukeadair.blueprint-plus` can't be used as written. A new app id installs as a separate app, so jobs saved under `com.scaletape` won't carry over.
+- Rename the folder and GitHub repo to blueprint-plus. (App name, README and Gradle project name are already "Blueprint+".)

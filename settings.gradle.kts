@@ -12,5 +12,5 @@ dependencyResolutionManagement {
         mavenCentral()
     }
 }
-rootProject.name = "ScaleTape"
+rootProject.name = "BlueprintPlus"
 include(":app")

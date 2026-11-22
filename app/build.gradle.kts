@@ -17,7 +17,7 @@ android {
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.scaletape"
+        applicationId = "com.lukeadair.blueprintplus"
         minSdk = 26
         targetSdk = 36
         versionCode = 1

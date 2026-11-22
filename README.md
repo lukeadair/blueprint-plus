@@ -1,7 +1,7 @@
-# Scale Tape
+# Blueprint+
 
 Android takeoff tool for cabinet quotes. Open a PDF floor plan, set the drawing scale
-(usually 1/4" = 1'), and measure cabinet runs by tapping two points. Scale Tape totals the
+(usually 1/4" = 1'), and measure cabinet runs by tapping two points. Blueprint+ totals the
 linear footage per room and for the whole job.
 
 - Magnifier with crosshairs and a drag handle for placing points precisely

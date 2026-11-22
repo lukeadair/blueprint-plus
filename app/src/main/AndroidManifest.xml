@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <application
-        android:label="Scale Tape"
+        android:label="Blueprint+"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
         <!-- configChanges: keeps the open PDF and measurements across rotation (nothing is persisted) -->
         <activity
