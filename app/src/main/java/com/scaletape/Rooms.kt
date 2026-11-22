@@ -30,17 +30,20 @@ private val ROOM_WORDS = listOf(
     "HALLWAY", "HALL", "PORCH", "PATIO", "NOOK", "POWDER", "PWDR", "STORAGE", "LOFT", "LIBRARY", "GYM",
     "FLEX", "CARPORT",
     // Common plan abbreviations
-    "M.BTH", "M. BTH", "M.BATH", "MSTR BATH", "MSTR BDRM", "BEDRM", "BDRM", "BTH", "PDR", "LNDY", "CL",
+    "M.BTH", "M. BTH", "M.BATH", "MSTR BATH", "MSTR BDRM", "BEDRM", "BDRM", "BTH", "PDR", "LNDY", "CL", "MASTER CL", "MSTR CL",
 ).sortedByDescending { it.length }
 
 private val ABBREVIATIONS = mapOf(
     "CLOS" to "Closet", "CL" to "Closet", "WIC" to "Walk-in Closet", "PWDR" to "Powder", "PDR" to "Powder",
     "M.BTH" to "Master Bath", "M. BTH" to "Master Bath", "M.BATH" to "Master Bath", "MSTR BATH" to "Master Bath",
     "MSTR BDRM" to "Master Bedroom", "BEDRM" to "Bedroom", "BDRM" to "Bedroom", "BTH" to "Bath", "LNDY" to "Laundry",
+    "MASTER CL" to "Master Closet", "MSTR CL" to "Master Closet",
 )
 // Too short to trust alone (CL is also "centerline"): only counts as a room when numbered, like "CL 1".
 private val NEEDS_NUMBER = setOf("CL")
 // "BEDROOM 2", "BEDROOM #3", but not a room size: "KITCHEN 10'x26'1" or "FLEX 12' x 10'".
+// A heading in an area table, not a room: "LIVING AREAS SQ. FT.", "GARAGE SF".
+private val AREA_HEADING = Regex("""^\s*(?:AREAS?\s+)?(?:SQ\b|SF\b|S\.F\.)""")
 private val NUMBER_AFTER = Regex("""^\s*#?(\d{1,2})(?![\d'"’′x×.,/-])""")
 
 /**
@@ -66,12 +69,13 @@ fun findRoomLabels(pageText: String, search: (String) -> List<TextHit>): List<Ro
             // A name pieced together from its words (start -1) reads its room number after its last word.
             val after = if (indexed || (h.start < 0 && end in 0..upper.length)) upper.substring(end) else ""
             if (word in NEEDS_NUMBER && !NUMBER_AFTER.containsMatchIn(after)) continue
+            if (AREA_HEADING.containsMatchIn(after)) continue
             hits += (if (indexed) qualifier(upper, h, search)?.let { "$it " } ?: "" else "") + displayName(word, after) to h
             // A name set on two lines ("FRONT" over "PORCH") comes back as one box twice as tall as its text:
             // size it by its first word's own box instead.
-            textHeight[h] = if (' ' !in word) h.bottom - h.top else search(word.substringBefore(' '))
+            textHeight[h] = if (' ' !in word) glyphSize(h) else search(word.substringBefore(' '))
                 .filter { it.left >= h.left - 1 && it.right <= h.right + 1 && it.top >= h.top - 1 && it.bottom <= h.bottom + 1 }
-                .minOfOrNull { it.bottom - it.top } ?: (h.bottom - h.top)
+                .minOfOrNull { glyphSize(it) } ?: glyphSize(h)
         }
     }
     if (hits.isEmpty()) return emptyList()
@@ -83,12 +87,15 @@ fun findRoomLabels(pageText: String, search: (String) -> List<TextHit>): List<Ro
         .map { (name, h) -> RoomLabel(name, (h.left + h.right) / 2, (h.top + h.bottom) / 2, (h.right - h.left) / 2, (h.bottom - h.top) / 2) }
 }
 
-// Closets worth a room of their own: master/his/her and walk-ins. Other closets and every porch are dropped
+// Text size from its box: the short side, so a vertical label (tall narrow box) measures like a horizontal one.
+private fun glyphSize(h: TextHit) = minOf(h.right - h.left, h.bottom - h.top)
+
+// Closets worth a room of their own: master/his/her and walk-ins. Other closets, halls, and every porch, patio, garage and carport are dropped
 // after the height filter, so their words still claim text and count toward the common label height.
 private val KEPT_CLOSET = Regex("""^(?:(?:Master|Mstr|Mst|Primary|His|Hers?|Walk-in)\b|M\.)""")
 private fun notACabinetRoom(name: String): Boolean {
     val base = name.replace(Regex("""\s+\d+$"""), "")
-    return "Porch" in base || base.endsWith("Closet") && !KEPT_CLOSET.containsMatchIn(base)
+    return listOf("Porch", "Patio", "Garage", "Carport").any { it in base } || base.endsWith("Hall") || base.endsWith("Hallway") || base.endsWith("Closet") && !KEPT_CLOSET.containsMatchIn(base)
 }
 
 /** `"GUEST ROOM"` -> `Guest Room`; `"CLOS"` -> `Closet`; `"BEDROOM"` followed by `" 2"` -> `Bedroom 2`. */
@@ -171,7 +178,8 @@ fun numberRepeats(labels: List<RoomLabel>, taken: Set<String>): List<RoomLabel> 
 
 /**
  * Whether ([x], [y]) sits in a table (a schedule listing rooms) rather than on the floor plan: 4+ long horizontal
- * lines evenly spaced 6-20pt apart (ruled rows) within 40pt above or below; the last row has none below it.
+ * lines evenly spaced 6-30pt apart (ruled rows; a 24x36 sheet's are ~20pt) within 105pt above or below, with the
+ * label among them or at most one row past them (a last row with no rule below it).
  * [pxPerPt] is bitmap pixels per PDF point; [isDark] reads one pixel.
  */
 fun inTable(x: Float, y: Float, pxPerPt: Float, isDark: (x: Int, y: Int) -> Boolean): Boolean {
@@ -186,14 +194,17 @@ fun inTable(x: Float, y: Float, pxPerPt: Float, isDark: (x: Int, y: Int) -> Bool
         return if (isDark(cx, yy)) 1f + run(1) + run(-1) else 0f
     }
     val rows = mutableListOf<Int>()
-    var yy = ((y - 40) * pxPerPt).roundToInt()
-    val end = ((y + 40) * pxPerPt).roundToInt()
+    var yy = ((y - 105) * pxPerPt).roundToInt()
+    val end = ((y + 105) * pxPerPt).roundToInt()
     while (yy <= end) {
         if (spanAt(yy) >= minLen) { rows += yy; yy += (3 * pxPerPt).roundToInt().coerceAtLeast(2) } else yy++
     }
-    val gaps = rows.zipWithNext { a, b -> (b - a) / pxPerPt }
-    // three gaps in a row, each 6-20pt and within 1.5pt of the first
-    return gaps.windowed(3).any { g -> g.all { it in 6f..20f && abs(it - g[0]) <= 1.5f } }
+    val py = y * pxPerPt
+    // three gaps in a row, each 6-30pt and within 1.5pt of the first, around the label (not dimension strings nearby)
+    return rows.windowed(4).any { r ->
+        val g = r.zipWithNext { a, b -> (b - a) / pxPerPt }
+        g.all { it in 6f..30f && abs(it - g[0]) <= 1.5f } && py in (r[0] - g[0] * pxPerPt)..(r[3] + g[0] * pxPerPt)
+    }
 }
 
 private fun displayName(word: String, after: String): String {
