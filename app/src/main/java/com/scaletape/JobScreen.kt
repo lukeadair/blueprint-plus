@@ -41,12 +41,12 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Place
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.BottomSheetScaffold
@@ -61,7 +61,6 @@ import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
-import androidx.compose.material3.IconToggleButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -406,14 +405,6 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
                             Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, "Next page")
                         }
                     }
-                    IconToggleButton(
-                        checked = editRooms,
-                        onCheckedChange = {
-                            editRooms = it; editIdx = null; draft = null
-                            if (it) { cursor = null; chain = emptyList(); calibrating = false; selected = null }
-                        },
-                        colors = IconButtonDefaults.iconToggleButtonColors(checkedContainerColor = MaterialTheme.colorScheme.primaryContainer),
-                    ) { Icon(Icons.Default.Place, "Edit room borders") }
                     IconButton(onClick = { editing = true }) { Icon(Icons.Default.Settings, "Job config") }
                 },
             )
@@ -494,7 +485,14 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
                         )
                         Button(onClick = { selected = null }, Modifier.padding(end = 8.dp)) { Text("Done") }
                     } else {
-                        Column(Modifier.weight(1f).padding(start = 16.dp)) {
+                        // Equal-width sides keep the total centered.
+                        Box(Modifier.width(104.dp).padding(start = 8.dp)) {
+                            IconButton(onClick = {
+                                editRooms = true; editIdx = null; draft = null
+                                cursor = null; chain = emptyList(); calibrating = false; selected = null
+                            }) { Icon(painterResource(R.drawable.ic_format_shapes), "Edit room borders") }
+                        }
+                        Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
                             Text(
                                 if (total == null) "Fix the scale" else "%.2f LF".format(total / 12),
                                 style = MaterialTheme.typography.titleLarge,
@@ -505,13 +503,15 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
                                 style = MaterialTheme.typography.bodySmall,
                             )
                         }
-                        if (calibrating) TextButton(onClick = { calibrating = false }, Modifier.padding(end = 8.dp)) { Text("Cancel") }
-                        else {
-                            IconButton(onClick = { restore(undoStack, redoStack) }, enabled = undoStack.isNotEmpty()) {
-                                Icon(painterResource(R.drawable.ic_undo), "Undo")
-                            }
-                            IconButton(onClick = { restore(redoStack, undoStack) }, Modifier.padding(end = 8.dp), enabled = redoStack.isNotEmpty()) {
-                                Icon(painterResource(R.drawable.ic_redo), "Redo")
+                        Row(Modifier.width(104.dp).padding(end = 8.dp), horizontalArrangement = Arrangement.End) {
+                            if (calibrating) TextButton(onClick = { calibrating = false }) { Text("Cancel") }
+                            else {
+                                IconButton(onClick = { restore(undoStack, redoStack) }, enabled = undoStack.isNotEmpty()) {
+                                    Icon(painterResource(R.drawable.ic_undo), "Undo")
+                                }
+                                IconButton(onClick = { restore(redoStack, undoStack) }, enabled = redoStack.isNotEmpty()) {
+                                    Icon(painterResource(R.drawable.ic_redo), "Redo")
+                                }
                             }
                         }
                     }
