@@ -37,6 +37,18 @@ class RoomsTest {
         assertEquals(listOf("Bathroom", "Bedroom", "Kitchen"), labels.map { it.name }.sorted())
     }
 
+    @Test fun tinyVerticalTagsDoNotOutvoteTheLabels() {
+        // Finley plan: 14pt labels, a 5pt horizontal tag, and several 5pt-wide vertical "KITCHEN"/"PANTRY" tags.
+        val text = "KITCHEN DINING PANTRY KITCHEN PANTRY KITCHEN KITCHEN"
+        val boxes = mapOf(
+            "KITCHEN" to listOf(TextHit(0, 0f, 0f, 55f, 14f), TextHit(22, 300f, 0f, 320f, 5f), TextHit(30, 400f, 0f, 405f, 20f), TextHit(38, 500f, 0f, 505f, 20f)),
+            "DINING" to listOf(TextHit(8, 100f, 0f, 144f, 14f)),
+            "PANTRY" to listOf(TextHit(15, 200f, 0f, 251f, 14f), TextHit(30, 600f, 0f, 605f, 19f)),
+        )
+        val names = findRoomLabels(text) { boxes[it].orEmpty() }.map { it.name }
+        assertEquals(listOf("Dining", "Kitchen", "Pantry"), names.sorted())
+    }
+
     @Test fun noteNextToTheCounterIsNotARoom() {
         // Test plan A: "NEW BEDROOM ADDITION" note (8pt box on the phone) sits closer to a kitchen run
         // than the 10pt KITCHEN label does. It must not count as a room.
@@ -78,7 +90,7 @@ class RoomsTest {
     }
 
     @Test fun porchesAndPlainClosetsAreDropped() {
-        val text = "CLOSET ; CL 1 ; GIRLS CLOSET ; BACK PORCH ; COVERED PATIO ; PATIO 2 ; GARAGE ; CARPORT ; HALL ; HALLWAY ; HALL 2 ; M. CLOSET ; MASTER CLOSET ; MASTER CL ; MSTR CL 2 ; HIS CLOSET ; HERS CLOSET ;" +
+        val text = "CLOSET ; CL 1 ; GIRLS CLOSET ; BACK PORCH ; COVERED PATIO ; PATIO 2 ; GARAGE ; CARPORT ; STORAGE ; HALL ; HALLWAY ; HALL 2 ; M. CLOSET ; MASTER CLOSET ; MASTER CL ; MSTR CL 2 ; HIS CLOSET ; HERS CLOSET ;" +
             " PRIMARY CLOSET ; WIC ; KITCHEN"
         val names = findRoomLabels(text, search(text) { 10f }).map { it.name }.sorted()
         assertEquals(

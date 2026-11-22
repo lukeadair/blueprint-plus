@@ -79,7 +79,9 @@ fun findRoomLabels(pageText: String, search: (String) -> List<TextHit>): List<Ro
         }
     }
     if (hits.isEmpty()) return emptyList()
-    val commonHeight = hits.groupingBy { textHeight.getValue(it.second).roundToInt() }.eachCount().maxBy { it.value }.key
+    // Only horizontal text votes: a page full of tiny vertical tags (5pt "KITCHEN" on cabinets) must not outvote the labels.
+    val voters = hits.filter { (_, h) -> h.right - h.left >= h.bottom - h.top }.ifEmpty { hits }
+    val commonHeight = voters.groupingBy { textHeight.getValue(it.second).roundToInt() }.eachCount().maxBy { it.value }.key
     return hits
         // Tight: search boxes are whole points, so a 6pt note can measure 8 next to 10pt labels.
         .filter { abs(textHeight.getValue(it.second) - commonHeight) <= maxOf(1f, commonHeight * 0.12f) }
@@ -90,12 +92,12 @@ fun findRoomLabels(pageText: String, search: (String) -> List<TextHit>): List<Ro
 // Text size from its box: the short side, so a vertical label (tall narrow box) measures like a horizontal one.
 private fun glyphSize(h: TextHit) = minOf(h.right - h.left, h.bottom - h.top)
 
-// Closets worth a room of their own: master/his/her and walk-ins. Other closets, halls, and every porch, patio, garage and carport are dropped
+// Closets worth a room of their own: master/his/her and walk-ins. Other closets, halls, and every porch, patio, garage, carport and storage are dropped
 // after the height filter, so their words still claim text and count toward the common label height.
 private val KEPT_CLOSET = Regex("""^(?:(?:Master|Mstr|Mst|Primary|His|Hers?|Walk-in)\b|M\.)""")
 private fun notACabinetRoom(name: String): Boolean {
     val base = name.replace(Regex("""\s+\d+$"""), "")
-    return listOf("Porch", "Patio", "Garage", "Carport").any { it in base } || base.endsWith("Hall") || base.endsWith("Hallway") || base.endsWith("Closet") && !KEPT_CLOSET.containsMatchIn(base)
+    return listOf("Porch", "Patio", "Garage", "Carport", "Storage").any { it in base } || base.endsWith("Hall") || base.endsWith("Hallway") || base.endsWith("Closet") && !KEPT_CLOSET.containsMatchIn(base)
 }
 
 /** `"GUEST ROOM"` -> `Guest Room`; `"CLOS"` -> `Closet`; `"BEDROOM"` followed by `" 2"` -> `Bedroom 2`. */
