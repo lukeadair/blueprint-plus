@@ -48,4 +48,19 @@ class JobTest {
         assertEquals(96.0, Job("i", "n", "1/4\" = 1'", runs = listOf(run, run)).totalInches()!!, 1e-9)
         assertNull(Job("i", "n", "nonsense", runs = listOf(run)).totalInches())
     }
+
+    // An L: 144 px right (1" on paper), then 144 px down (1"). At 1/4" = 1' that is 48" + 48".
+    private val corner = run.copy(extra = listOf(Offset(154f, 164f)))
+
+    @Test fun chainedRunSumsSegments() {
+        assertEquals(96.0, corner.inches(parseScale("1/4\" = 1'")!!), 1e-9)
+        assertEquals(10f, corner.distanceTo(Offset(164f, 100f)), 1e-4f) // beside the second segment
+        assertEquals(Offset(154f, 164f), corner.points().last())
+    }
+
+    @Test fun chainedRunRoundTripsAndOldSavesLoad() {
+        val job = Job("i", "n", runs = listOf(corner, run))
+        assertEquals(job, jobFromJson(job.toJson()))
+        assertEquals(emptyList<Offset>(), jobFromJson(job.toJson()).runs[1].extra) // no "pts" key when not chained
+    }
 }

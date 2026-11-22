@@ -5,25 +5,33 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * A measured run: two points in page-bitmap pixels, on a page rendered at [ppi].
+ * A measured run: a polyline of [a], [b] and any [extra] points (a corner turned), in page-bitmap pixels, on a page rendered at [ppi].
  * [room]: null = not assigned yet; "" = Unassigned. [roomManual]: the user chose the room (by dragging), so the
  * app never changes it; otherwise the app picks it from the plan's labels and re-picks when the job reopens.
  */
 data class Run(
     val page: Int, val a: Offset, val b: Offset, val ppi: Float,
     val room: String? = null, val roomManual: Boolean = false,
+    val extra: List<Offset> = emptyList(),
 ) {
+    fun points(): List<Offset> = listOf(a, b) + extra
+
+    private fun segments() = points().zipWithNext()
+
+    /** Midpoint of the longest segment, in page pixels: where the run's label sits and its room is picked. */
+    fun midpoint(): Offset = segments().maxByOrNull { (p, q) -> (q - p).getDistance() }!!.let { (p, q) -> (p + q) / 2f }
+
     /** Midpoint in PDF points (1/72"), the units room labels come in. */
-    fun midPoints(): Offset = (a + b) / 2f / ppi * 72f
+    fun midPoints(): Offset = midpoint() / ppi * 72f
 
-    fun inches(ratio: Double) = realInches((b - a).getDistance().toDouble(), ppi.toDouble(), ratio)
+    fun inches(ratio: Double) = realInches(segments().sumOf { (p, q) -> (q - p).getDistance().toDouble() }, ppi.toDouble(), ratio)
 
-    /** Distance from [p] to this run's segment (not the infinite line), in page pixels. */
-    fun distanceTo(p: Offset): Float {
+    /** Distance from [p] to the nearest segment of this run (not the infinite line), in page pixels. */
+    fun distanceTo(p: Offset): Float = segments().minOf { (a, b) ->
         val ab = b - a
         val len2 = ab.x * ab.x + ab.y * ab.y
         val t = if (len2 == 0f) 0f else (((p.x - a.x) * ab.x + (p.y - a.y) * ab.y) / len2).coerceIn(0f, 1f)
-        return (p - (a + ab * t)).getDistance()
+        (p - (a + ab * t)).getDistance()
     }
 }
 
@@ -68,6 +76,7 @@ fun Job.toJson(): String = JSONObject()
             .put("ppi", it.ppi.toDouble())
             .apply { if (it.room != null) put("room", it.room) }
             .apply { if (it.roomManual) put("roomManual", true) }
+            .apply { if (it.extra.isNotEmpty()) put("pts", JSONArray(it.extra.flatMap { p -> listOf(p.x.toDouble(), p.y.toDouble()) })) }
     }))
     .put("rooms", JSONArray(rooms))
     .put("boundaries", JSONArray(boundaries.map { b ->
@@ -101,6 +110,8 @@ fun jobFromJson(json: String): Job {
                 r.getDouble("ppi").toFloat(),
                 if (r.has("room")) r.getString("room") else null,
                 r.optBoolean("roomManual"),
+                r.optJSONArray("pts")?.let { p -> (0 until p.length() / 2).map { Offset(p.getDouble(2 * it).toFloat(), p.getDouble(2 * it + 1).toFloat()) } }
+                    ?: emptyList(),
             )
         },
         rooms = (0 until (roomArr?.length() ?: 0)).map { roomArr!!.getString(it) },

@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -93,6 +94,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.CoroutineScope
@@ -140,9 +142,9 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
     var viewSize by remember { mutableStateOf(IntSize.Zero) }
 
     // Measuring: tap places `cursor` (shown in the loupe), drag the grabber to fine-tune, then Set.
-    // The first Set fixes `anchor`; the second makes a run from anchor to cursor.
+    // Each Set appends `cursor` to `chain`; Done turns a chain of 2+ points into one run (calibrating finishes at 2).
     var cursor by remember { mutableStateOf<Offset?>(null) }
-    var anchor by remember { mutableStateOf<Offset?>(null) }
+    var chain by remember { mutableStateOf<List<Offset>>(emptyList()) }
     var calibrating by remember { mutableStateOf(false) }
     var calibLine by remember { mutableStateOf<Run?>(null) }
     var confirmClear by remember { mutableStateOf(false) }
@@ -156,8 +158,8 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
     var bitmapPage by remember { mutableIntStateOf(-1) } // the page `bitmap` shows (it lags `page` while rendering)
 
     // Registered after the screen-level handler, so while measuring or selecting, back cancels that instead of leaving.
-    BackHandler(enabled = cursor != null || anchor != null || calibrating || selected != null || editRooms) {
-        cursor = null; anchor = null; calibrating = false; selected = null
+    BackHandler(enabled = cursor != null || chain.isNotEmpty() || calibrating || selected != null || editRooms) {
+        cursor = null; chain = emptyList(); calibrating = false; selected = null
         if (editIdx != null) { editIdx = null; draft = null } else editRooms = false
     }
 
@@ -175,7 +177,7 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
     LaunchedEffect(renderer, page) {
         val r = renderer ?: return@LaunchedEffect
         val (bmp, dpi) = withContext(pdfThread) { r.renderPage(page) }
-        bitmap = bmp; ppi = dpi; bitmapPage = page; cursor = null; anchor = null; editIdx = null; draft = null
+        bitmap = bmp; ppi = dpi; bitmapPage = page; cursor = null; chain = emptyList(); editIdx = null; draft = null
         if (selected?.page != page) selected = null // kept when a list tap switched to its page
         if (viewSize.width > 0) { // fit page to view
             zoom = minOf(viewSize.width.toFloat() / bmp.width, viewSize.height.toFloat() / bmp.height)
@@ -273,12 +275,14 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
     fun setPoint() {
         val c = cursor ?: return
-        val a = anchor
-        if (a == null) { anchor = c; return } // magnifier stays open for the end point
-        val run = Run(page, a, c, ppi)
-        if (calibrating) { calibLine = run; calibrating = false }
-        else { update { it.copy(runs = it.runs + run).reassignRooms() }; scope.launch { refreshRooms(onlyNew = true) } }
-        anchor = null; cursor = null
+        chain = chain + c // magnifier stays open for the next point
+        if (calibrating && chain.size == 2) { calibLine = Run(page, chain[0], chain[1], ppi); calibrating = false; chain = emptyList(); cursor = null }
+    }
+    fun finishChain() {
+        if (chain.size < 2) return
+        val run = Run(page, chain[0], chain[1], ppi, extra = chain.drop(2))
+        update { it.copy(runs = it.runs + run).reassignRooms() }; scope.launch { refreshRooms(onlyNew = true) }
+        chain = emptyList(); cursor = null
     }
 
     val sheet = rememberBottomSheetScaffoldState()
@@ -325,7 +329,7 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
                         checked = editRooms,
                         onCheckedChange = {
                             editRooms = it; editIdx = null; draft = null
-                            if (it) { cursor = null; anchor = null; calibrating = false; selected = null }
+                            if (it) { cursor = null; chain = emptyList(); calibrating = false; selected = null }
                         },
                         colors = IconButtonDefaults.iconToggleButtonColors(checkedContainerColor = MaterialTheme.colorScheme.primaryContainer),
                     ) { Icon(Icons.Default.Place, "Edit room borders") }
@@ -344,22 +348,22 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
                 )
                 Row(Modifier.fillMaxWidth().height(64.dp), verticalAlignment = Alignment.CenterVertically) {
                     val c = cursor
-                    val a = anchor
-                    if (c != null || a != null) {
-                        TextButton(onClick = { cursor = null; anchor = null }) { Text("Cancel") }
-                        val live = if (a != null && c != null && ratio != null && !calibrating)
-                            formatFeetInches(Run(page, a, c, ppi).inches(ratio)) else null
+                    if (c != null || chain.isNotEmpty()) {
+                        TextButton(onClick = { cursor = null; chain = emptyList() }) { Text("Cancel") }
+                        val live = if (chain.isNotEmpty() && c != null && ratio != null && !calibrating)
+                            (chain + c).let { formatFeetInches(Run(page, it[0], it[1], ppi, extra = it.drop(2)).inches(ratio)) } else null
                         Text(
                             when {
                                 live != null -> live
-                                c == null -> "Tap the end point"
-                                a == null -> "Drag to the start, tap ≡ to set"
-                                else -> "Drag to the end, tap ≡ to set"
+                                c == null -> "Tap the plan to continue"
+                                chain.isEmpty() -> "Tap ≡ to set start"
+                                else -> "Tap ≡ to add a point"
                             },
-                            Modifier.weight(1f).padding(horizontal = 8.dp),
-                            style = MaterialTheme.typography.titleMedium,
+                            Modifier.weight(1f).padding(horizontal = 4.dp),
+                            style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis,
                         )
-                        Button(onClick = { setPoint() }, enabled = c != null) { Text(if (a == null) "Set start" else "Set end") }
+                        Button(onClick = { setPoint() }, enabled = c != null, contentPadding = PaddingValues(horizontal = 12.dp)) { Text("Set point") }
+                        if (!calibrating) Button(onClick = { finishChain() }, Modifier.padding(start = 6.dp, end = 8.dp), enabled = chain.size >= 2, contentPadding = PaddingValues(horizontal = 12.dp)) { Text("Done") }
                     } else if (editRooms) {
                         val idx = editIdx
                         TextButton(onClick = { if (idx != null) { editIdx = null; draft = null } else editRooms = false }) { Text("Done") }
@@ -440,7 +444,7 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
                 onTap = { i ->
                     // Highlight it on the plan (switching page if needed) and drop the sheet to show it.
                     val r = job.runs[i]
-                    cursor = null; anchor = null; calibrating = false
+                    cursor = null; chain = emptyList(); calibrating = false
                     selected = r
                     if (r.page != page) update { it.copy(page = r.page) }
                     else if (viewSize.width > 0) { // same page: center it, zooming in until it spans ~40% of the view
@@ -498,7 +502,7 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
                                 editIdx = i; draft = i?.let { job.boundaries[it] }
                                 return@detectTapGestures
                             }
-                            if (cursor == null && anchor == null && !calibrating) {
+                            if (cursor == null && chain.isEmpty() && !calibrating) {
                                 // Not measuring: a tap near a run selects it; a tap elsewhere clears a selection first.
                                 val hit = job.runs.filter { it.page == page }.minByOrNull { it.distanceTo(p) }
                                 if (hit != null && hit.distanceTo(p) * zoom < 24.dp.toPx()) { selected = hit; return@detectTapGestures }
@@ -521,7 +525,7 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
                         image = remember(bmp) { bmp.asImageBitmap() },
                         runs = job.runs.filter { it.page == page },
                         ratio = ratio, zoom = zoom, pan = pan,
-                        cursor = cursor, anchor = anchor, calibLine = calibLine, selected = selected,
+                        cursor = cursor, chain = chain, calibLine = calibLine, selected = selected,
                         pointColor = if (calibrating) CALIB_COLOR else RUN_COLOR,
                         rooms = job.boundaries.mapIndexed { i, b -> if (i == editIdx && draft != null) draft!! else b }.filter { it.page == page },
                         activeRoom = draft, editRooms = editRooms, pxPerPt = ppi / 72f,
@@ -815,7 +819,7 @@ private fun PlanCanvas(
     zoom: Float,
     pan: Offset,
     cursor: Offset?,
-    anchor: Offset?,
+    chain: List<Offset>,
     calibLine: Run?,
     selected: Run?,
     pointColor: Color,
@@ -857,14 +861,13 @@ private fun PlanCanvas(
                 drawPath(path, c, style = Stroke((if (active) 3.dp else 1.5.dp).toPx() * px))
             }
             runs.forEach {
-                if (it == selected) drawLine(SELECTED_COLOR, it.a, it.b, 6.dp.toPx() * px)
-                else drawLine(RUN_COLOR, it.a, it.b, 3.dp.toPx() * px)
+                val sel = it == selected
+                it.points().zipWithNext().forEach { (p, q) -> drawLine(if (sel) SELECTED_COLOR else RUN_COLOR, p, q, (if (sel) 6 else 3).dp.toPx() * px) }
             }
             calibLine?.let { drawLine(CALIB_COLOR, it.a, it.b, 3.dp.toPx() * px) }
-            anchor?.let { a ->
-                drawCircle(pointColor, 4.dp.toPx() * px, a)
-                cursor?.let { drawLine(pointColor, a, it, 2.dp.toPx() * px, pathEffect = dash) }
-            }
+            chain.zipWithNext().forEach { (p, q) -> drawLine(pointColor, p, q, 2.dp.toPx() * px) }
+            chain.forEach { drawCircle(pointColor, 4.dp.toPx() * px, it) }
+            chain.lastOrNull()?.let { a -> cursor?.let { drawLine(pointColor, a, it, 2.dp.toPx() * px, pathEffect = dash) } }
         }
 
         fun DrawScope.crosshair(at: Offset, arm: Float, color: Color) {
@@ -875,7 +878,7 @@ private fun PlanCanvas(
         withTransform({ translate(pan.x, pan.y); scale(zoom, zoom, Offset.Zero) }) { plan(1 / zoom) }
 
         if (ratio != null) runs.forEach { r ->
-            val mid = (r.a + r.b) / 2f * zoom + pan
+            val mid = r.midpoint() * zoom + pan
             drawContext.canvas.nativeCanvas.drawText(formatFeetInches(r.inches(ratio)), mid.x, mid.y - 4.dp.toPx(), labelPaint)
         }
 
@@ -911,7 +914,7 @@ private fun PlanCanvas(
 
         // Grabber: a drag handle (three bars) attached to the loupe, so the finger never covers the point.
         val g = geo.grabber
-        val settingEnd = anchor != null
+        val settingEnd = chain.isNotEmpty()
         drawCircle(if (settingEnd) END_GRABBER_COLOR else primary, geo.grabberR, g)
         drawCircle(outline, geo.grabberR, g, style = Stroke(2.dp.toPx()))
         val bar = 8.dp.toPx()
