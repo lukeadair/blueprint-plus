@@ -53,14 +53,16 @@ fun findRoomLabels(pageText: String, search: (String) -> List<TextHit>): List<Ro
     val hits = mutableListOf<Pair<String, TextHit>>()
     val textHeight = mutableMapOf<TextHit, Float>()
     for (word in ROOM_WORDS) {
-        if (!upper.contains(word)) continue
-        for (h in search(word)) {
-            val end = h.start + word.length
+        // The phrase as the text stores it, plus its words placed together on the page in any text order.
+        val found = (if (upper.contains(word)) search(word).map { it to it.start + word.length } else emptyList()) +
+            (if (' ' in word) placedTogether(word, upper, search) else emptyList())
+        for ((h, end) in found) {
             val indexed = h.start >= 0 && end <= upper.length && upper.regionMatches(h.start, word, 0, word.length)
             if (indexed && h.start > 0 && upper[h.start - 1].isLetter()) continue // "...BATH" inside a word
             if (indexed && end < upper.length && upper[end].isLetter()) continue // "CLOS" in "CLOSED"
             if (hits.any { (_, o) -> o.left < h.right && h.left < o.right && o.top < h.bottom && h.top < o.bottom }) continue
-            val after = if (indexed) upper.substring(end) else ""
+            // A name pieced together from its words (start -1) reads its room number after its last word.
+            val after = if (indexed || (h.start < 0 && end in 0..upper.length)) upper.substring(end) else ""
             if (word in NEEDS_NUMBER && !NUMBER_AFTER.containsMatchIn(after)) continue
             hits += displayName(word, after) to h
             // A name set on two lines ("FRONT" over "PORCH") comes back as one box twice as tall as its text:
@@ -79,6 +81,39 @@ fun findRoomLabels(pageText: String, search: (String) -> List<TextHit>): List<Ro
 }
 
 /** `"GUEST ROOM"` -> `Guest Room`; `"CLOS"` -> `Closet`; `"BEDROOM"` followed by `" 2"` -> `Bedroom 2`. */
+/**
+ * A multi-word name found word by word: each next word right after the last on the same line, or starting
+ * on the line below it, at the same text height. Some PDFs store a name set on two lines out of order
+ * ("ROOM 18'x20'7 ... GREAT"), so the phrase search misses it. Returns one box per name, with start -1 and
+ * the text index just past its last word.
+ */
+private fun placedTogether(word: String, upper: String, search: (String) -> List<TextHit>): List<Pair<TextHit, Int>> {
+    val parts = word.split(' ')
+    if (parts.any { !upper.contains(it) }) return emptyList()
+    fun whole(h: TextHit, w: String) = h.start >= 0 && h.start + w.length <= upper.length &&
+        upper.regionMatches(h.start, w, 0, w.length) &&
+        (h.start == 0 || !upper[h.start - 1].isLetter()) &&
+        (h.start + w.length == upper.length || !upper[h.start + w.length].isLetter())
+    val found = parts.map { p -> search(p).filter { whole(it, p) } }
+    return found[0].mapNotNull { first ->
+        val lineH = first.bottom - first.top
+        var box = first
+        var last = first
+        for (next in found.drop(1)) {
+            val n = next.firstOrNull { h ->
+                val sameHeight = abs((h.bottom - h.top) - lineH) <= lineH * 0.2f
+                val sameLine = abs(h.top - last.top) <= lineH / 2 && h.left >= last.right && h.left - last.right <= lineH
+                val nextLine = h.top >= last.top + lineH / 2 && h.top - last.bottom <= lineH &&
+                    h.left < last.right && last.left < h.right
+                sameHeight && (sameLine || nextLine)
+            } ?: return@mapNotNull null
+            box = TextHit(-1, minOf(box.left, n.left), box.top, maxOf(box.right, n.right), maxOf(box.bottom, n.bottom))
+            last = n
+        }
+        box to (last.start + parts.last().length)
+    }
+}
+
 private fun displayName(word: String, after: String): String {
     val name = ABBREVIATIONS[word]
         ?: word.lowercase().split(' ').joinToString(" ") { it.replaceFirstChar(Char::uppercase) }

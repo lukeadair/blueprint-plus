@@ -44,6 +44,26 @@ class RoomsTest {
         assertEquals(listOf("Front Porch", "Guest Room", "Hall", "Kitchen"), labels.map { it.name }.sorted())
     }
 
+    @Test fun labelOnTwoLinesStoredOutOfOrder() {
+        // Test plan C on the phone: "GREAT" over "ROOM", but the page text has ROOM first, so "GREAT ROOM" never matches.
+        val text = "ROOM 18'x20'7 9' CLN HT GREAT KITCHEN"
+        val boxes = mapOf(
+            "ROOM" to TextHit(0, 501f, 223f, 520f, 228f),
+            "GREAT" to TextHit(text.indexOf("GREAT"), 501f, 218f, 521f, 223f),
+            "KITCHEN" to TextHit(text.indexOf("KITCHEN"), 300f, 100f, 330f, 105f),
+        )
+        assertEquals(listOf("Great Room", "Kitchen"), findRoomLabels(text) { listOfNotNull(boxes[it]) }.map { it.name }.sorted())
+        // ROOM elsewhere on the page (not right under GREAT) isn't paired
+        val apart = boxes + ("ROOM" to TextHit(0, 501f, 260f, 520f, 265f))
+        assertEquals(listOf("Kitchen"), findRoomLabels(text) { listOfNotNull(apart[it]) }.map { it.name })
+        // Same line, stored out of order: "GREAT ROOM" on the page, "ROOM ... GREAT" in the text.
+        val sideBySide = boxes + ("ROOM" to TextHit(0, 524f, 218f, 543f, 223f))
+        assertEquals(listOf("Great Room", "Kitchen"), findRoomLabels(text) { listOfNotNull(sideBySide[it]) }.map { it.name }.sorted())
+        // ROOM before GREAT on the line isn't "GREAT ROOM"
+        val reversed = boxes + ("ROOM" to TextHit(0, 478f, 218f, 497f, 223f))
+        assertEquals(listOf("Kitchen"), findRoomLabels(text) { listOfNotNull(reversed[it]) }.map { it.name })
+    }
+
     @Test fun numberedRooms() {
         val text = "BEDROOM 2 BEDROOM #3 BEDROOM"
         val names = findRoomLabels(text, search(text) { 10f }).map { it.name }
