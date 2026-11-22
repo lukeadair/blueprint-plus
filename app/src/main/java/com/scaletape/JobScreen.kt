@@ -74,6 +74,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -107,6 +108,7 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.CoroutineScope
@@ -142,8 +144,17 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
     var pushed by remember { mutableStateOf<Map<Int, RoomBoundary>>(emptyMap()) }
     LaunchedEffect(editIdx, draft == null) { pushed = emptyMap() } // a drag cut short by a reset mustn't leave it behind
     // shortcut: saves synchronously on the main thread (small JSON, keeps writes ordered); move to a writer thread if jobs get huge.
-    fun update(f: (Job) -> Job) {
+    // Snapshots of the job before each user edit; in memory only, so they're gone once the job is closed.
+    val undoStack = remember { mutableStateListOf<Job>() }
+    val redoStack = remember { mutableStateListOf<Job>() }
+    fun update(undoable: Boolean = false, f: (Job) -> Job) {
         val next = f(job)
+        if (undoable && (next.runs != job.runs || next.rooms != job.rooms || next.boundaries != job.boundaries)) {
+            undoStack.add(job); if (undoStack.size > 50) undoStack.removeAt(0)
+            redoStack.clear()
+        }
+        // Snapshots from another scale hold borders and room picks found at it, and restore keeps the scale.
+        if (parseScale(next.scale) != parseScale(job.scale)) { undoStack.clear(); redoStack.clear() }
         val reseeded = next.reseedIfScaleChanged(job)
         if (reseeded !== next) { editIdx = null; draft = null } // borders were wiped, so editIdx may point at another one
         job = reseeded.copy(updated = System.currentTimeMillis())
@@ -323,7 +334,7 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
     fun finishChain() {
         if (chain.size < 2) return
         val run = Run(page, chain[0], chain[1], ppi, extra = chain.drop(2))
-        update { it.copy(runs = it.runs + run).reassignRooms() }; scope.launch { refreshRooms(onlyNew = true) }
+        update(true) { it.copy(runs = it.runs + run).reassignRooms() }; scope.launch { refreshRooms(onlyNew = true) }
         chain = emptyList(); cursor = null
     }
 
@@ -332,7 +343,7 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
         nodeDraft = null
         if (moved == null || moved == base) return
         var saved = moved
-        update { j ->
+        update(true) { j ->
             val i = j.runs.indexOf(base)
             if (i < 0) j else j.copy(runs = j.runs.mapIndexed { k, r -> if (k == i) moved else r }).reassignRooms().also { saved = it.runs[i] }
         }
@@ -343,8 +354,16 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
     fun replaceSelected(old: Run, new: Run) {
         val i = job.runs.indexOf(old)
         if (i < 0) return
-        update { j -> j.copy(runs = j.runs.mapIndexed { k, r -> if (k == i) new else r }).reassignRooms() }
+        update(true) { j -> j.copy(runs = j.runs.mapIndexed { k, r -> if (k == i) new else r }).reassignRooms() }
         selected = job.runs[i]
+    }
+
+    /** Moves the edit data (not page, scale or name) from the top of [from] into the job, pushing the current job onto [to]. */
+    fun restore(from: MutableList<Job>, to: MutableList<Job>) {
+        val s = from.removeLastOrNull() ?: return
+        to.add(job)
+        selected = null; editIdx = null; draft = null; nodeDraft = null
+        update { it.copy(runs = s.runs, rooms = s.rooms, boundaries = s.boundaries, editedPages = s.editedPages, seededPages = s.seededPages) }
     }
 
     val sheet = rememberBottomSheetScaffoldState()
@@ -459,7 +478,7 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
                     } else if (selected != null) {
                         val sel = selected!!
                         Button(
-                            onClick = { update { it.copy(runs = it.runs - sel) }; selected = null },
+                            onClick = { update(true) { it.copy(runs = it.runs - sel) }; selected = null },
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = MaterialTheme.colorScheme.error,
                                 contentColor = MaterialTheme.colorScheme.onError,
@@ -487,11 +506,14 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
                             )
                         }
                         if (calibrating) TextButton(onClick = { calibrating = false }, Modifier.padding(end = 8.dp)) { Text("Cancel") }
-                        else TextButton(
-                            onClick = { update { it.copy(runs = it.runs.dropLast(1)) } },
-                            Modifier.padding(end = 8.dp),
-                            enabled = job.runs.isNotEmpty(),
-                        ) { Text("Undo") }
+                        else {
+                            IconButton(onClick = { restore(undoStack, redoStack) }, enabled = undoStack.isNotEmpty()) {
+                                Icon(painterResource(R.drawable.ic_undo), "Undo")
+                            }
+                            IconButton(onClick = { restore(redoStack, undoStack) }, Modifier.padding(end = 8.dp), enabled = redoStack.isNotEmpty()) {
+                                Icon(painterResource(R.drawable.ic_redo), "Redo")
+                            }
+                        }
                     }
                 }
             }
@@ -520,7 +542,7 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
                 },
                 onDelete = { i ->
                     if (selected == job.runs[i]) selected = null
-                    update { it.copy(runs = it.runs.filterIndexed { j, _ -> j != i }) }
+                    update(true) { it.copy(runs = it.runs.filterIndexed { j, _ -> j != i }) }
                 },
                 onMove = { i, room ->
                     val old = job.runs.getOrNull(i)
@@ -529,7 +551,7 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
                         if (selected == old) selected = moved
                         // Keep the room it left in the list even if that was its last run (Unassigned excepted).
                         val from = old.room.orEmpty()
-                        update {
+                        update(true) {
                             it.copy(
                                 runs = it.runs.mapIndexed { j, r -> if (j == i) moved else r },
                                 rooms = if (from.isEmpty() || from in it.rooms) it.rooms else it.rooms + from,
@@ -607,7 +629,7 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
                             val b = draft ?: return
                             val changed = p + (i to b)
                             if (changed.all { (k, v) -> job.boundaries.getOrNull(k) == v }) return
-                            update { j -> j.copy(boundaries = j.boundaries.mapIndexed { k, old -> changed[k] ?: old }, editedPages = j.editedPages + b.page).reassignRooms() }
+                            update(true) { j -> j.copy(boundaries = j.boundaries.mapIndexed { k, old -> changed[k] ?: old }, editedPages = j.editedPages + b.page).reassignRooms() }
                             if (selected != null && selected !in job.runs) selected = null
                         }
                         val n = d.points.size
@@ -757,7 +779,7 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
         confirmButton = {
             TextButton(onClick = {
                 editIdx = null; draft = null; redetecting = false
-                update { it.unseed(setOf(page)) } // clean slate: the seeding effect redraws the page
+                update(true) { it.unseed(setOf(page)) } // clean slate: the seeding effect redraws the page
             }) { Text("Redetect") }
         },
         dismissButton = { TextButton(onClick = { redetecting = false }) { Text("Cancel") } },
@@ -768,7 +790,7 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
         title = { Text("Clear all runs?") },
         text = { Text("All ${job.runs.size} runs on every page will be removed.") },
         confirmButton = {
-            TextButton(onClick = { update { it.copy(runs = emptyList()) }; confirmClear = false }) { Text("Clear") }
+            TextButton(onClick = { update(true) { it.copy(runs = emptyList()) }; confirmClear = false }) { Text("Clear") }
         },
         dismissButton = { TextButton(onClick = { confirmClear = false }) { Text("Cancel") } },
     )
@@ -806,7 +828,7 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
                 TextButton(
                     onClick = {
                         val b = newRect?.let { RoomBoundary(name.trim(), page, it.corners()) }
-                        update {
+                        update(true) {
                             it.copy(
                                 rooms = it.rooms + name.trim(), boundaries = it.boundaries + listOfNotNull(b),
                                 editedPages = if (b != null) it.editedPages + page else it.editedPages,
@@ -849,7 +871,7 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
                         val to = existing ?: target
                         if (selected?.room == old) selected = null
                         editIdx = null; draft = null
-                        update { it.renameRoom(old, to) }
+                        update(true) { it.renameRoom(old, to) }
                         renamingRoom = null
                     },
                     enabled = target.isNotEmpty() && !reserved && target != old,
@@ -868,7 +890,7 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
             text = { Text("Its runs go to the room around them, or Unassigned. No measurements are deleted.") },
             confirmButton = {
                 TextButton(onClick = {
-                    update { j -> j.copy(boundaries = j.boundaries.filterIndexed { k, _ -> k != idx }, editedPages = j.editedPages + border.page).reassignRooms() }
+                    update(true) { j -> j.copy(boundaries = j.boundaries.filterIndexed { k, _ -> k != idx }, editedPages = j.editedPages + border.page).reassignRooms() }
                     editIdx = null; draft = null
                     if (selected != null && selected !in job.runs) selected = null
                     deletingBorder = null
@@ -894,7 +916,7 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
                     // Runs stay, marked manual so re-picking doesn't put them straight back.
                     if (selected?.room == room) selected = null
                     editIdx = null; draft = null
-                    update { j ->
+                    update(true) { j ->
                         j.copy(
                             rooms = j.rooms - room,
                             boundaries = j.boundaries.filter { it.name != room },
