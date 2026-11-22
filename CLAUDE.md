@@ -15,7 +15,7 @@ export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ./gradlew assembleRelease              # signed with the upload key via git-ignored keystore.properties → app/build/outputs/apk/release/app-release.apk
 ```
-Release signing reuses the sixteenth-plus upload key (`keystore.properties` → `~/.android-keys/`). Never commit either. Bump `versionCode` and `versionName` in `app/build.gradle.kts` for each release. A release-signed APK can't install over a debug install (different signature): uninstalling the debug app deletes its saved jobs.
+Release signing uses the `CN=Luke Adair` key shared with sixteenth-plus (`keystore.properties` → `~/.android-keys/lukeadair-upload.jks`). Never commit either. Bump `versionCode` and `versionName` in `app/build.gradle.kts` for each release. A release-signed APK can't install over a debug install (different signature): uninstalling the debug app deletes its saved jobs.
 
 ## Layout
 - `app/src/main/java/com/scaletape/Scale.kt`: all length/scale parsing and math. Pure Kotlin, no Android imports. Keep it that way so it stays unit-testable.
@@ -57,3 +57,7 @@ Release signing reuses the sixteenth-plus upload key (`keystore.properties` → 
 - Follow Material 3 components and color roles (`MaterialTheme.colorScheme`); marks drawn on the plan use fixed colors because the paper is always white.
 - Keep it lean: no new dependencies, DI, ViewModel or navigation library unless a feature truly needs it.
 - Package/app id is `com.scaletape`. Never change `applicationId` as a side effect.
+
+## TODO
+- Rename to blueprint-plus (folder and GitHub repo); brand as "Blueprint+".
+- Change package/app id to `com.lukeadair.blueprintplus`. Hyphens aren't allowed in Android package names, so `com.lukeadair.blueprint-plus` can't be used as written. A new app id installs as a separate app, so jobs saved under `com.scaletape` won't carry over.
