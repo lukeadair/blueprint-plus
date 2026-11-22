@@ -23,6 +23,23 @@ data class Run(
         else -> copy(extra = extra.mapIndexed { k, q -> if (k == i - 2) p else q })
     }
 
+    private fun withPoints(l: List<Offset>) = copy(a = l[0], b = l[1], extra = l.drop(2))
+
+    /** This run with a new point on the segment nearest [p], at the spot on it closest to [p]; unchanged if that is within [minGap] of an existing point. */
+    fun withInserted(p: Offset, minGap: Float = 0f): Run {
+        val pts = points()
+        val k = (0 until pts.size - 1).minBy { Run(page, pts[it], pts[it + 1], ppi).distanceTo(p) }
+        val ab = pts[k + 1] - pts[k]
+        val len2 = ab.x * ab.x + ab.y * ab.y
+        val t = if (len2 == 0f) 0f else (((p.x - pts[k].x) * ab.x + (p.y - pts[k].y) * ab.y) / len2).coerceIn(0f, 1f)
+        val q = pts[k] + ab * t
+        if ((q - pts[k]).getDistance() <= minGap || (q - pts[k + 1]).getDistance() <= minGap) return this
+        return withPoints(pts.toMutableList().apply { add(k + 1, q) })
+    }
+
+    /** This run without point [i]; a run keeps at least two points. */
+    fun withoutPoint(i: Int): Run = if (points().size <= 2) this else withPoints(points().filterIndexed { k, _ -> k != i })
+
     private fun segments() = points().zipWithNext()
 
     /** Midpoint of the longest segment, in page pixels: where the run's label sits and its room is picked. */

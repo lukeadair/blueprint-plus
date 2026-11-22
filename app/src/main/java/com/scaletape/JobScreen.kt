@@ -304,6 +304,14 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
         selected = saved
     }
 
+    /** Swaps [old] for [new] and selects the stored run (reassignRooms may have changed its room, so it can differ from [new]). */
+    fun replaceSelected(old: Run, new: Run) {
+        val i = job.runs.indexOf(old)
+        if (i < 0) return
+        update { j -> j.copy(runs = j.runs.mapIndexed { k, r -> if (k == i) new else r }).reassignRooms() }
+        selected = job.runs[i]
+    }
+
     val sheet = rememberBottomSheetScaffoldState()
     val localDensity = LocalDensity.current
     var headerHeight by remember { mutableStateOf(0.dp) } // measured, so the peek shows exactly the header
@@ -524,7 +532,12 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
                             if (cursor == null && chain.isEmpty() && !calibrating) {
                                 // Not measuring: a tap near a run selects it; a tap elsewhere clears a selection first.
                                 val hit = job.runs.filter { it.page == page }.minByOrNull { it.distanceTo(p) }
-                                if (hit != null && hit.distanceTo(p) * zoom < 24.dp.toPx()) { selected = hit; return@detectTapGestures }
+                                if (hit != null && hit.distanceTo(p) * zoom < 24.dp.toPx()) {
+                                    if (hit == selected) { // tap on the selected run's edge adds a node there
+                                        replaceSelected(hit, hit.withInserted(p, 8.dp.toPx() / zoom)) // same 8dp gap as chained points
+                                    } else selected = hit
+                                    return@detectTapGestures
+                                }
                                 if (selected != null) { selected = null; return@detectTapGestures }
                             }
                             val c = cursor
@@ -608,6 +621,12 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
                             Box(
                                 Modifier.offset { IntOffset((v.x - handle).roundToInt(), (v.y - handle).roundToInt()) }.size(44.dp)
                                     .semantics { contentDescription = "Run point" }
+                                    .pointerInput(sel, i) { // long-press removes the node (a run keeps 2)
+                                        detectTapGestures(onLongPress = {
+                                            val fewer = sel.withoutPoint(i)
+                                            if (fewer != sel) replaceSelected(sel, fewer)
+                                        })
+                                    }
                                     .pointerInput(sel, i) {
                                         var target = Offset.Zero
                                         detectDragGestures(
@@ -906,7 +925,8 @@ private fun PlanCanvas(
             }
             runs.forEach {
                 val sel = it == selected
-                it.points().zipWithNext().forEach { (p, q) -> drawLine(if (sel) SELECTED_COLOR else RUN_COLOR, p, q, (if (sel) 6 else 3).dp.toPx() * px) }
+                it.points().zipWithNext().forEach { (p, q) -> drawLine(if (sel) SELECTED_COLOR else RUN_COLOR, p, q, (if (sel) 4 else 3).dp.toPx() * px) }
+                if (sel) it.points().zipWithNext().forEach { (p, q) -> drawCircle(SELECTED_COLOR, 6.dp.toPx() * px, (p + q) / 2f) } // tap an edge to add a node
                 if (sel) it.points().forEach { p -> // node handles, like a room border's corners
                     drawCircle(Color.White, 9.dp.toPx() * px, p)
                     drawCircle(SELECTED_COLOR, 9.dp.toPx() * px, p, style = Stroke(3.dp.toPx() * px))

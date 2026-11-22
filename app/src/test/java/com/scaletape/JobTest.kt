@@ -70,4 +70,16 @@ class JobTest {
         assertEquals(corner.copy(extra = listOf(Offset(1f, 2f))), corner.withPoint(2, Offset(1f, 2f)))
         assertEquals(Offset(154f, 164f), corner.withPoint(0, Offset(0f, 0f)).points().last()) // others untouched
     }
+
+    @Test fun insertAndRemoveNode() {
+        val r = Run(0, Offset(0f, 0f), Offset(100f, 0f), 72f)
+        val grown = r.withInserted(Offset(30f, 9f))
+        assertEquals(3, grown.points().size)
+        assertEquals(30f, grown.points()[1].x, 0.01f)
+        assertEquals(0f, grown.points()[1].y, 0.01f)
+        assertEquals(r, grown.withoutPoint(1))
+        assertEquals(r, r.withoutPoint(0)) // keeps two points
+        assertEquals(r, r.withInserted(Offset(130f, 5f))) // past the end: would duplicate the endpoint
+        assertEquals(r, r.withInserted(Offset(5f, 5f), minGap = 8f)) // too close to a node
+    }
 }
