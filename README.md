@@ -17,24 +17,27 @@
 </p>
 
 <p align="center">
-  <img src="docs/images/hero.jpg" width="540" alt="A floor plan with detected room borders in Blueprint+" />
+  <img src="docs/images/plan.jpg" width="270" alt="A floor plan with detected room borders and measured cabinet runs" />
+  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+  <img src="docs/images/runs.jpg" width="270" alt="The run list grouped by room with linear-foot totals" />
 </p>
 
 Blueprint+ is an Android takeoff tool for cabinet quotes. Open a PDF floor plan, set the drawing
-scale (usually 1/4" = 1'), and measure cabinet runs by tapping two points. It totals the linear
+scale (usually 1/4" = 1'), and measure cabinet runs by tapping points. It totals the linear
 footage per room and for the whole job. Everything stays on the phone.
 
-## What it does
+## Features
 
-**Precise points.** Tap to open a magnifier with crosshairs, then drag the handle to place each point.
-
-**Any scale.** Type the scale, or calibrate from a known dimension for plans printed "fit to page".
-
-**Rooms.** Room names are read from the plan's own text (Android 15+, PDFs with real text), and room borders are found from the walls. Drag corners, add rooms, or Redetect.
-
-**Totals.** The run list is grouped by room with footage totals. Drag runs between rooms; add, rename and delete rooms.
-
-**Saved automatically.** Every change is saved as you go. Nothing is lost on back or kill.
+- **Precise points.** Tap to open a magnifier with crosshairs, then drag the handle to place each point.
+- **Multi-point runs.** Chain points into one run around corners. Drag a run's points to adjust it later.
+- **Scale from the plan.** The drawing scale is read from the PDF when it's printed there, and you confirm it once.
+- **Calibrate.** For plans printed "fit to page", measure a known dimension. It snaps to a standard architectural scale when it's close.
+- **Rooms found automatically.** Room names are read from the plan's text, or with on-device OCR for scanned plans. Room borders are found from the walls.
+- **Room editing.** Drag corners and walls, add, rename, merge and delete rooms, or Redetect.
+- **Totals by room.** The run list is grouped by room with linear-foot totals. Drag a run onto another room to move it.
+- **Undo and Redo** for runs, rooms and borders.
+- **Quote spreadsheet.** Export an .xlsx with one row per room, a $/LF price and totals, then share it.
+- **Saved automatically.** Every change is saved on the phone as you go. No account, no network.
 
 ## Install
 
