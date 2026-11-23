@@ -20,8 +20,8 @@ android {
         applicationId = "com.lukeadair.blueprintplus"
         minSdk = 26
         targetSdk = 36
-        versionCode = 3
-        versionName = "1.2"
+        versionCode = 4
+        versionName = "2.0"
         // shortcut: arm64 only (ML Kit adds ~11 MB per ABI); no x86 emulator or 32-bit phones. Add ABIs here if needed.
         ndk { abiFilters += "arm64-v8a" }
     }
