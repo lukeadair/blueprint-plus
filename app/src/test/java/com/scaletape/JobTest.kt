@@ -39,6 +39,15 @@ class JobTest {
         assertEquals(listOf("Kitchen", "Pantry"), merged.rooms) // no duplicate, old name gone
     }
 
+    @Test fun macRoomColorsLoadAndFollowRenames() {
+        val job = jobFromJson(Job("i", "n").toJson().dropLast(1) + ",\"roomColors\":{\"Bath\":3754411,\"Kitchen\":4431943}}")
+        assertEquals(mapOf("Bath" to 0x3949ABL, "Kitchen" to 0x43A047L), job.roomColors)
+        assertEquals(job, jobFromJson(job.toJson()))
+        assertEquals(mapOf("Master Bath" to 0x3949ABL, "Kitchen" to 0x43A047L), job.renameRoom("Bath", "Master Bath").roomColors)
+        assertEquals(mapOf("Kitchen" to 0x43A047L), job.renameRoom("Bath", "Kitchen").roomColors) // a merge keeps the target's
+        assertEquals(false, Job("i", "n").toJson().contains("roomColors")) // the Mac omits it when empty too
+    }
+
     @Test fun olderSavesWithoutCreatedUseUpdated() {
         val old = Job("i", "n", updated = 500L).toJson().replace(Regex(",?\"created\":\\d+"), "")
         assertEquals(500L, jobFromJson(old).created)

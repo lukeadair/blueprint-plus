@@ -16,6 +16,8 @@ import kotlin.coroutines.resumeWithException
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -203,7 +205,7 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
 
     fun update(undoable: Boolean = false, f: (Job) -> Job) {
         val next = f(job)
-        if (undoable && (next.runs != job.runs || next.rooms != job.rooms || next.boundaries != job.boundaries)) {
+        if (undoable && (next.runs != job.runs || next.rooms != job.rooms || next.boundaries != job.boundaries || next.roomColors != job.roomColors)) {
             undoStack.add(job); if (undoStack.size > 50) undoStack.removeAt(0)
             redoStack.clear()
         }
@@ -398,7 +400,7 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
         val s = from.removeLastOrNull() ?: return
         to.add(job)
         selected = null; editIdx = null; draft = null; nodeDraft = null
-        update { it.copy(runs = s.runs, rooms = s.rooms, boundaries = s.boundaries, editedPages = s.editedPages, seededPages = s.seededPages) }
+        update { it.copy(runs = s.runs, rooms = s.rooms, boundaries = s.boundaries, editedPages = s.editedPages, seededPages = s.seededPages, roomColors = s.roomColors) }
     }
 
     val sheet = rememberBottomSheetScaffoldState()
@@ -571,6 +573,7 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
                 extraRooms = (job.rooms + job.boundaries.map { it.name }).distinct(),
                 onAddRoom = { addingRoom = true },
                 onRenameRoom = { renamingRoom = it },
+                roomColors = job.roomColors,
                 onTap = { i ->
                     // Highlight it on the plan (switching page if needed) and drop the sheet to show it.
                     val r = job.runs[i]
@@ -663,7 +666,7 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
                         cursor = cursor, nodeLoupe = nodeLoupe, chain = chain, calibLine = calibLine, selected = shownSelected,
                         pointColor = if (calibrating) CALIB_COLOR else RUN_COLOR,
                         rooms = job.boundaries.mapIndexed { i, b -> if (i == editIdx && draft != null) draft!! else pushed[i] ?: b }.filter { it.page == page },
-                        activeRoom = draft, editRooms = editRooms, pxPerPt = ppi / 72f,
+                        activeRoom = draft, editRooms = editRooms, pxPerPt = ppi / 72f, roomColors = job.roomColors,
                     )
                     if (editRooms) draft?.let { d ->
                         val handle = with(LocalDensity.current) { 22.dp.toPx() }
@@ -891,6 +894,9 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
 
     renamingRoom?.let { old ->
         var name by remember(old) { mutableStateOf(old) }
+        var color by remember(old) { mutableStateOf(job.roomColors[old]) }
+        val shown = roomColor(old, color?.let { mapOf(old to it) } ?: emptyMap())
+        val colorChanged = color != job.roomColors[old]
         val target = name.trim()
         // Renaming onto another room merges them; use that room's exact spelling.
         val existing = (job.rooms + job.boundaries.map { it.name } + job.runs.mapNotNull { it.room?.ifEmpty { null } }).distinct()
@@ -898,8 +904,8 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
         val reserved = target.equals("Unassigned", ignoreCase = true)
         AlertDialog(
             onDismissRequest = { renamingRoom = null },
-            title = { Text("Rename room") },
-            text = {
+            title = { Text("Edit room") },
+            text = { Column {
                 OutlinedTextField(
                     value = name, onValueChange = { name = it }, singleLine = true, label = { Text("Name") },
                     isError = reserved,
@@ -909,7 +915,20 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
                         else -> null
                     },
                 )
-            },
+                FlowRow(Modifier.padding(top = 8.dp)) {
+                    ROOM_PALETTE.forEachIndexed { i, c ->
+                        val sw = roomColor(old, mapOf(old to c))
+                        Box(
+                            Modifier.size(48.dp).clickable(onClickLabel = "Use color ${i + 1}") { color = c }
+                                .semantics { contentDescription = "Color ${i + 1}" + if (sw == shown) ", selected" else "" },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            if (sw == shown) Box(Modifier.size(40.dp).border(2.dp, MaterialTheme.colorScheme.onSurface, CircleShape))
+                            Box(Modifier.size(32.dp).background(sw, CircleShape))
+                        }
+                    }
+                }
+            } },
             // One full-width row so Delete sits on the left; AlertDialog's own slots both align right.
             confirmButton = {
                 Row(Modifier.fillMaxWidth()) {
@@ -924,11 +943,16 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
                             val to = existing ?: target
                             if (selected?.room == old) selected = null
                             editIdx = null; draft = null
-                            update(true) { it.renameRoom(old, to) }
+                            val renamed = target.isNotEmpty() && !reserved && target != old
+                            update(true) { j ->
+                                // color first, so renameRoom carries it (a merge keeps the target's)
+                                (if (colorChanged) j.copy(roomColors = j.roomColors + (old to color!!)) else j)
+                                    .let { if (renamed) it.renameRoom(old, to) else it }
+                            }
                             renamingRoom = null
                         },
-                        enabled = target.isNotEmpty() && !reserved && target != old,
-                    ) { Text(if (existing != null) "Merge" else "Rename") }
+                        enabled = (target.isNotEmpty() && !reserved && target != old) || (colorChanged && (target == old)),
+                    ) { Text(if (existing != null) "Merge" else if (target != old) "Rename" else "Save") }
                 }
             },
         )
@@ -956,6 +980,7 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
                             boundaries = j.boundaries.filter { it.name != room },
                             editedPages = j.editedPages + j.boundaries.filter { it.name == room }.map { it.page },
                             runs = j.runs.map { if (it.room == room) it.copy(room = "", roomManual = true) else it },
+                            roomColors = j.roomColors - room,
                         )
                     }
                     deletingRoom = null
@@ -1028,10 +1053,14 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
     }
 }
 
-private val ROOM_COLORS = listOf(0xFF1E88E5, 0xFF43A047, 0xFF8E24AA, 0xFFF4511E, 0xFF00897B, 0xFFC0CA33, 0xFFD81B60, 0xFF6D4C41)
+internal val ROOM_COLORS = listOf(0xFF1E88E5, 0xFF43A047, 0xFF8E24AA, 0xFFF4511E, 0xFF00897B, 0xFFC0CA33, 0xFFD81B60, 0xFF6D4C41)
 
-/** A room's color, fixed per name (drawn over white paper, so not themed). */
-private fun roomColor(name: String) = Color(ROOM_COLORS[(name.hashCode() and Int.MAX_VALUE) % ROOM_COLORS.size])
+/** What the room color picker offers (0xRRGGBB, like `Job.roomColors`): the Mac's palette, automatic colors first. */
+internal val ROOM_PALETTE = ROOM_COLORS.map { it and 0xFFFFFF } + listOf(0x3949ABL, 0x039BE5L, 0x7CB342L, 0xFB8C00L, 0x546E7AL)
+
+/** A room's color: the one picked on the Mac, else fixed per name (same hash as the Mac's). Drawn over white paper, so not themed. */
+internal fun roomColor(name: String, custom: Map<String, Long>) =
+    Color(custom[name]?.let { 0xFF000000 or it } ?: ROOM_COLORS[(name.hashCode() and Int.MAX_VALUE) % ROOM_COLORS.size])
 
 /** The loupe sits directly over the point; the grabber hangs off its bottom rim. */
 private class Geometry(p: Offset, density: Float) {
@@ -1054,6 +1083,7 @@ private fun PlanCanvas(
     selected: Run?,
     pointColor: Color,
     rooms: List<RoomBoundary>,
+    roomColors: Map<String, Long>,
     activeRoom: RoomBoundary?,
     editRooms: Boolean,
     pxPerPt: Float,
@@ -1085,7 +1115,7 @@ private fun PlanCanvas(
                     r.points.forEachIndexed { i, pt -> (pt * pxPerPt).let { if (i == 0) moveTo(it.x, it.y) else lineTo(it.x, it.y) } }
                     close()
                 }
-                val c = roomColor(r.name)
+                val c = roomColor(r.name, roomColors)
                 val active = r === activeRoom
                 drawPath(path, c.copy(alpha = if (active) 0.25f else if (editRooms) 0.16f else 0.07f))
                 drawPath(path, c, style = Stroke((if (active) 3.dp else 1.5.dp).toPx() * px))
@@ -1122,7 +1152,7 @@ private fun PlanCanvas(
             drawContext.canvas.nativeCanvas.drawText(r.name, mid.x, mid.y, roomPaint)
         }
         if (editRooms) activeRoom?.let { r -> // corner handles; the small dots between them move a wall or add a corner
-            val color = roomColor(r.name)
+            val color = roomColor(r.name, roomColors)
             r.points.forEachIndexed { i, v ->
                 val next = r.points[(i + 1) % r.points.size]
                 drawCircle(color, 4.dp.toPx(), (v + next) / 2f * pxPerPt * zoom + pan)

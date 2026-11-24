@@ -119,12 +119,12 @@ class JobStoreTest {
 
     @Test fun unknownKeysSurviveALoadSaveRoundTrip() {
         val s = tempStore()
-        val o = org.json.JSONObject(job("a", 5).toJson()).put("roomColors", org.json.JSONObject().put("Kitchen", 0xFF8800))
+        val o = org.json.JSONObject(job("a", 5).toJson()).put("futureKey", org.json.JSONObject().put("Kitchen", 0xFF8800))
         File(s.dir, "a.json").writeText(o.toString())
         val loaded = s.load("a")!!
         s.save(loaded.copy(name = "Jones"))
         val back = org.json.JSONObject(File(s.dir, "a.json").readText())
-        assertEquals(0xFF8800, back.getJSONObject("roomColors").getInt("Kitchen"))
+        assertEquals(0xFF8800, back.getJSONObject("futureKey").getInt("Kitchen"))
         assertEquals("Jones", back.getString("name"))
         assertEquals(loaded, s.load("a")!!.copy(name = "Smith")) // equal after a round trip, so a copy isn't a false conflict
         assertNull(s.load("missing"))

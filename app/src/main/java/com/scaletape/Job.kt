@@ -79,7 +79,9 @@ data class Job(
     val scaleSet: Boolean = true,
     /** The scale read from the plan when the job was made (null = none found); Job Config marks it "found in plan". */
     val foundScale: String? = null,
-    /** JSON keys this app doesn't read (the Mac's "roomColors"), each value as JSON text; written back unchanged. */
+    /** Colors the user picked for rooms on the Mac (0xRRGGBB); a room not in here gets its color from its name. */
+    val roomColors: Map<String, Long> = emptyMap(),
+    /** JSON keys this app doesn't read, each value as JSON text; written back unchanged. */
     val unknownKeys: Map<String, String> = emptyMap(),
 ) {
     /**
@@ -91,6 +93,7 @@ data class Job(
         rooms = (rooms.map { if (it == old) to else it } + to).distinct(),
         boundaries = boundaries.map { if (it.name == old) it.copy(name = to) else it },
         editedPages = editedPages + boundaries.filter { it.name == old }.map { it.page }, // a scale change must not undo it
+        roomColors = roomColors[old]?.let { c -> (roomColors - old).let { if (to in it) it else it + (to to c) } } ?: roomColors, // a merge keeps the target's
     )
 
     /** Null when the scale text doesn't parse. */
@@ -120,12 +123,13 @@ fun Job.toJson(): String = JSONObject()
     .put("editedPages", JSONArray(editedPages.sorted()))
     .put("scaleSet", scaleSet)
     .apply { if (foundScale != null) put("foundScale", foundScale) }
+    .apply { if (roomColors.isNotEmpty()) put("roomColors", JSONObject(roomColors)) }
     .apply { unknownKeys.forEach { (k, v) -> if (!has(k)) put(k, JSONArray(v).get(0)) } }
     .toString()
 
 private val KNOWN_KEYS = setOf(
     "id", "name", "scale", "page", "updated", "created", "runs", "rooms", "boundaries",
-    "seededPages", "editedPages", "scaleSet", "foundScale",
+    "seededPages", "editedPages", "scaleSet", "foundScale", "roomColors",
 )
 
 fun jobFromJson(json: String): Job {
@@ -168,6 +172,7 @@ fun jobFromJson(json: String): Job {
         editedPages = (0 until (editedArr?.length() ?: 0)).map { editedArr!!.getInt(it) }.toSet(),
         scaleSet = o.optBoolean("scaleSet", true), // older saves: already in use, don't prompt
         foundScale = if (o.has("foundScale")) o.getString("foundScale") else null,
+        roomColors = o.optJSONObject("roomColors")?.let { c -> c.keys().asSequence().associateWith { c.getLong(it) } } ?: emptyMap(),
         // wrapped in an array so a bare string or number round-trips as JSON text
         unknownKeys = o.keys().asSequence().filter { it !in KNOWN_KEYS }.associateWith { JSONArray().put(o.get(it)).toString() },
     )

@@ -1,6 +1,9 @@
 package com.scaletape
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.PaddingValues
@@ -36,6 +39,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.LocalPinnableContainer
@@ -62,6 +66,7 @@ fun RunList(
     extraRooms: List<String>,
     onAddRoom: () -> Unit,
     onRenameRoom: (room: String) -> Unit,
+    roomColors: Map<String, Long>,
     modifier: Modifier = Modifier,
 ) {
     val byRoom = runs.withIndex().groupBy { it.value.room.orEmpty() }
@@ -117,9 +122,12 @@ fun RunList(
         for ((room, items) in sections) {
             val dropBg = if (dragging != null && hover == room) hoverColor else null
             item(key = "room:$room") {
+                val color = if (room.isEmpty()) MaterialTheme.colorScheme.onSurfaceVariant else roomColor(room, roomColors) // matches its border on the plan
+                val base = MaterialTheme.colorScheme.surfaceContainerHigh
                 ListItem(
                     headlineContent = {
                         Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(Modifier.padding(end = 12.dp).size(10.dp).background(color, CircleShape))
                             // weight(fill = false): a long name wraps instead of squeezing the pencil out.
                             Text(room.ifEmpty { "Unassigned" }, Modifier.weight(1f, fill = false), style = MaterialTheme.typography.titleMedium)
                             if (room.isNotEmpty()) IconButton(onClick = { onRenameRoom(room) }, Modifier.size(36.dp)) {
@@ -132,7 +140,7 @@ fun RunList(
                             ratio?.let { r -> Text("%.2f LF".format(items.sumOf { it.value.inches(r) } / 12), style = MaterialTheme.typography.titleMedium) }
                         }
                     },
-                    colors = ListItemDefaults.colors(containerColor = dropBg ?: MaterialTheme.colorScheme.surfaceContainerHigh),
+                    colors = ListItemDefaults.colors(containerColor = dropBg ?: if (room.isEmpty()) base else color.copy(alpha = 0.15f).compositeOver(base)),
                 )
             }
             items(items, key = { "run:${it.index}" }) { (i, r) ->
