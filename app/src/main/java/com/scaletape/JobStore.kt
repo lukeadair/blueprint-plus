@@ -32,7 +32,8 @@ class JobStore(val folder: Folder) {
     private fun jsonName(id: String) = "$id.json"
     fun openPdf(id: String): ParcelFileDescriptor = folder.openPdf(pdfName(id))
 
-    private fun parse(name: String) = folder.read(name)?.let { runCatching { jobFromJson(it.decodeToString()) }.getOrNull() }
+    private fun parse(name: String, listed: Boolean = false) =
+        (if (listed) folder.readListed(name) else folder.read(name))?.let { runCatching { jobFromJson(it.decodeToString()) }.getOrNull() }
 
     /**
      * The jobs whose PDF is here (a sync tool may bring the JSON first). A JSON not named `<id>.json` is a sync tool's
@@ -45,13 +46,13 @@ class JobStore(val folder: Folder) {
         for (n in names.toList()) {
             if (!n.startsWith(".") || !n.endsWith(".json.tmp")) continue
             val id = n.removePrefix(".").removeSuffix(".json.tmp")
-            if (jsonName(id) !in names && parse(n)?.id == id && folder.rename(n, jsonName(id))) names += jsonName(id)
+            if (jsonName(id) !in names && parse(n, listed = true)?.id == id && folder.rename(n, jsonName(id))) names += jsonName(id)
         }
         val jobs = mutableMapOf<String, Job>()
         val strays = mutableListOf<Pair<String, Job>>()
         for (n in names) {
             if (n.startsWith(".") || !n.endsWith(".json")) continue
-            val j = parse(n) ?: continue
+            val j = parse(n, listed = true) ?: continue
             if ('/' in j.id || j.id.startsWith(".")) continue // an id is a file name; never let one leave the folder
             if (n == jsonName(j.id)) jobs[j.id] = j else strays += n to j
         }

@@ -17,6 +17,8 @@ import java.nio.file.StandardCopyOption
 interface Folder {
     fun names(): List<String>
     fun read(name: String): ByteArray?
+    /** [read] through the last [names] listing's handle: no lookup per file, but only fresh right after listing. */
+    fun readListed(name: String): ByteArray? = read(name)
     /** Replaces [name] with [bytes] without ever leaving a half-written [name] behind (a sync tool could upload it). */
     fun write(name: String, bytes: ByteArray)
     fun input(name: String): InputStream
@@ -65,7 +67,10 @@ class SafFolder(context: Context, val tree: Uri) : Folder {
         arrayOf(Document.COLUMN_DOCUMENT_ID, Document.COLUMN_DISPLAY_NAME), null, null, null,
     )?.use { c ->
         buildMap { while (c.moveToNext()) put(c.getString(1), DocumentsContract.buildDocumentUriUsingTree(tree, c.getString(0))) }
-    } ?: throw IOException("Can't read the sync folder")
+    }?.also { listed = it } ?: throw IOException("Can't read the sync folder")
+
+    // The last listing's URIs, so list() reading every JSON isn't one folder query per file; a stale one falls back.
+    @Volatile private var listed: Map<String, Uri> = emptyMap()
 
     private fun uri(name: String) = children()[name]
     private fun need(name: String) = uri(name) ?: throw FileNotFoundException(name)
@@ -74,7 +79,9 @@ class SafFolder(context: Context, val tree: Uri) : Folder {
         ?: throw IOException("Can't create $name in the sync folder")
 
     override fun names() = children().keys.toList()
-    override fun read(name: String) = runCatching { uri(name)?.let { u -> cr.openInputStream(u)?.use { it.readBytes() } } }.getOrNull()
+    private fun readUri(u: Uri) = runCatching { cr.openInputStream(u)?.use { it.readBytes() } }.getOrNull()
+    override fun read(name: String) = runCatching { uri(name) }.getOrNull()?.let(::readUri)
+    override fun readListed(name: String) = listed[name]?.let(::readUri) ?: read(name)
 
     /**
      * SAF can't replace a file atomically, so: full content to a hidden temp, delete the old file, rename the temp in.
