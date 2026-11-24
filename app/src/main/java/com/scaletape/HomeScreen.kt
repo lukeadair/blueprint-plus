@@ -31,12 +31,14 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
@@ -67,6 +69,8 @@ import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -76,7 +80,7 @@ import kotlin.math.roundToInt
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun HomeScreen(store: JobStore, onOpen: (String) -> Unit) {
+fun HomeScreen(store: JobStore, onStore: (JobStore) -> Unit, onOpen: (String) -> Unit) {
     var jobs by remember { mutableStateOf<List<Job>?>(null) }
     var creating by remember { mutableStateOf(false) }
     var toDelete by remember { mutableStateOf<Job?>(null) }
@@ -84,12 +88,33 @@ fun HomeScreen(store: JobStore, onOpen: (String) -> Unit) {
     val listState = rememberLazyListState()
     val snackbar = remember { SnackbarHostState() }
     // The chosen order survives restarts.
-    val prefs = LocalContext.current.getSharedPreferences("home", Context.MODE_PRIVATE)
+    val context = LocalContext.current
+    val prefs = context.getSharedPreferences("home", Context.MODE_PRIVATE)
     var sort by remember { mutableStateOf(JobSort.entries.firstOrNull { it.name == prefs.getString("sort", null) } ?: JobSort.RECENT) }
     var sortMenu by remember { mutableStateOf(false) }
+    var moreMenu by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
-    LaunchedEffect(Unit) { jobs = withContext(Dispatchers.IO) { store.list() } }
+    // Also on every return to the app: the sync tool may have brought jobs in meanwhile.
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { scope.launch { jobs = withContext(Dispatchers.IO) { store.list() } } }
+
+    /** Runs a sync-folder switch off the main thread, then shows the new store's jobs. */
+    fun switchStore(failure: String, f: () -> JobStore) {
+        creating = true
+        scope.launch {
+            try {
+                val (s, list) = withContext(Dispatchers.IO) { f().let { it to it.list() } }
+                onStore(s); jobs = list
+            } catch (e: Exception) {
+                snackbar.showSnackbar("$failure: ${e.message}")
+            } finally {
+                creating = false
+            }
+        }
+    }
+    val pickFolder = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { tree ->
+        if (tree != null) switchStore("Couldn't use that folder") { startSync(context, tree) }
+    }
     // An open row closes on scroll and once the delete dialog is dismissed.
     LaunchedEffect(listState) { snapshotFlow { listState.isScrollInProgress }.collect { if (it) openId = null } }
     LaunchedEffect(toDelete) { if (toDelete == null) openId = null }
@@ -99,7 +124,7 @@ fun HomeScreen(store: JobStore, onOpen: (String) -> Unit) {
         creating = true
         scope.launch {
             try {
-                onOpen(withContext(Dispatchers.IO) { store.create(uri) }.id)
+                onOpen(withContext(Dispatchers.IO) { store.create(context, uri) }.id)
             } catch (e: Exception) { // corrupt or password-protected PDFs throw
                 snackbar.showSnackbar("Couldn't open PDF: ${e.message}")
             } finally {
@@ -130,6 +155,18 @@ fun HomeScreen(store: JobStore, onOpen: (String) -> Unit) {
                                     trailingIcon = if (option == sort) ({ Icon(Icons.Default.Check, contentDescription = "Selected") }) else null,
                                 )
                             }
+                        }
+                    }
+                    Box {
+                        IconButton(onClick = { moreMenu = true }) { Icon(Icons.Default.MoreVert, contentDescription = "More options") }
+                        DropdownMenu(expanded = moreMenu, onDismissRequest = { moreMenu = false }) {
+                            if (store.folder is SafFolder) DropdownMenuItem(
+                                text = { Text("Stop syncing") },
+                                onClick = { moreMenu = false; switchStore("Couldn't copy the jobs back") { stopSync(context, store) } },
+                            ) else DropdownMenuItem(
+                                text = { Text("Sync folder") },
+                                onClick = { moreMenu = false; if (!creating) pickFolder.launch(null) },
+                            )
                         }
                     }
                 },

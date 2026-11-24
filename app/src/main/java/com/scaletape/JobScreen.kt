@@ -7,7 +7,6 @@ import android.graphics.Bitmap
 import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.pdf.PdfRenderer
-import android.os.ParcelFileDescriptor
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
@@ -76,6 +75,7 @@ import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -102,6 +102,8 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.semantics.contentDescription
@@ -145,24 +147,6 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
     // borders added meanwhile (seeding finishing mid-drag) aren't overwritten.
     var pushed by remember { mutableStateOf<Map<Int, RoomBoundary>>(emptyMap()) }
     LaunchedEffect(editIdx, draft == null) { pushed = emptyMap() } // a drag cut short by a reset mustn't leave it behind
-    // shortcut: saves synchronously on the main thread (small JSON, keeps writes ordered); move to a writer thread if jobs get huge.
-    // Snapshots of the job before each user edit; in memory only, so they're gone once the job is closed.
-    val undoStack = remember { mutableStateListOf<Job>() }
-    val redoStack = remember { mutableStateListOf<Job>() }
-    fun update(undoable: Boolean = false, f: (Job) -> Job) {
-        val next = f(job)
-        if (undoable && (next.runs != job.runs || next.rooms != job.rooms || next.boundaries != job.boundaries)) {
-            undoStack.add(job); if (undoStack.size > 50) undoStack.removeAt(0)
-            redoStack.clear()
-        }
-        // Snapshots from another scale hold borders and room picks found at it, and restore keeps the scale.
-        if (parseScale(next.scale) != parseScale(job.scale)) { undoStack.clear(); redoStack.clear() }
-        val reseeded = next.reseedIfScaleChanged(job)
-        if (reseeded !== next) { editIdx = null; draft = null } // borders were wiped, so editIdx may point at another one
-        job = reseeded.copy(updated = System.currentTimeMillis())
-        store.save(job)
-    }
-
     var renderer by remember { mutableStateOf<PdfRenderer?>(null) }
     var message by remember { mutableStateOf<String?>(null) }
     var bitmap by remember { mutableStateOf<Bitmap?>(null) }
@@ -192,6 +176,57 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
     var redetecting by remember { mutableStateOf(false) } // confirm before replacing this page's borders
     var bitmapPage by remember { mutableIntStateOf(-1) } // the page `bitmap` shows (it lags `page` while rendering)
 
+    // shortcut: saves synchronously on the main thread (small JSON, keeps writes ordered); move to a writer thread if jobs get huge.
+    // Snapshots of the job before each user edit; in memory only, so they're gone once the job is closed.
+    val undoStack = remember { mutableStateListOf<Job>() }
+    val redoStack = remember { mutableStateListOf<Job>() }
+    val context = LocalContext.current
+    // The `updated` of the version last loaded or saved here; a file with another one was saved by another device.
+    var seen by remember { mutableLongStateOf(initial.updated) }
+
+    /** Shows [disk] if another device saved it, keeping this page. Undo is cleared: its snapshots are of the old version. */
+    fun reloadIfChanged(disk: Job) {
+        if (disk.updated == seen) return
+        cursor = null; chain = emptyList(); calibrating = false; calibLine = null; selected = null
+        nodeDraft = null; nodeLoupe = null; editIdx = null; draft = null; pushed = emptyMap()
+        undoStack.clear(); redoStack.clear()
+        job = disk.copy(page = job.page)
+        seen = disk.updated
+    }
+
+    // Another device's save comes in through the sync tool while this app is in the background.
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
+        val disk = store.load(job.id)
+        if (disk == null && !store.folder.exists("${job.id}.json")) onBack() // deleted elsewhere
+        else if (disk != null) reloadIfChanged(disk)
+    }
+
+    fun update(undoable: Boolean = false, f: (Job) -> Job) {
+        val next = f(job)
+        if (undoable && (next.runs != job.runs || next.rooms != job.rooms || next.boundaries != job.boundaries)) {
+            undoStack.add(job); if (undoStack.size > 50) undoStack.removeAt(0)
+            redoStack.clear()
+        }
+        // Snapshots from another scale hold borders and room picks found at it, and restore keeps the scale.
+        if (parseScale(next.scale) != parseScale(job.scale)) { undoStack.clear(); redoStack.clear() }
+        val reseeded = next.reseedIfScaleChanged(job)
+        if (reseeded !== next) { editIdx = null; draft = null } // borders were wiped, so editIdx may point at another one
+        job = reseeded.copy(updated = System.currentTimeMillis())
+        try {
+            store.save(job, seen)
+            seen = job.updated
+        } catch (_: JobStore.ChangedElsewhere) {
+            // Never merge: keep this device's version as its own job and show the other device's.
+            runCatching { store.saveAsConflict(job) }
+                .onSuccess { Toast.makeText(context, "This job was changed on another device, so your edit was saved as '${it.name}'.", Toast.LENGTH_LONG).show() }
+                .onFailure { Toast.makeText(context, "Couldn't save: ${it.message}", Toast.LENGTH_LONG).show() }
+            store.load(job.id)?.let { reloadIfChanged(it) }
+        } catch (e: Exception) {
+            Toast.makeText(context, "Couldn't save: ${e.message}", Toast.LENGTH_LONG).show()
+        }
+    }
+
+
     // Registered after the screen-level handler, so while measuring or selecting, back cancels that instead of leaving.
     BackHandler(enabled = cursor != null || chain.isNotEmpty() || calibrating || selected != null || editRooms) {
         cursor = null; chain = emptyList(); calibrating = false; selected = null
@@ -200,7 +235,7 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
 
     DisposableEffect(Unit) {
         val r = runCatching {
-            PdfRenderer(ParcelFileDescriptor.open(store.pdf(job.id), ParcelFileDescriptor.MODE_READ_ONLY))
+            PdfRenderer(store.openPdf(job.id))
         }.onFailure { message = "Couldn't open PDF: ${it.message}" }.getOrNull()
         renderer = r
         onDispose { r?.let { CoroutineScope(pdfThread).launch { it.close() } } }
@@ -323,7 +358,6 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
     val total = job.totalInches()
 
     val scope = rememberCoroutineScope()
-    val context = LocalContext.current
     // A point must sit a little away from the last one, so tapping Set twice can't add a duplicate node.
     val minMovePx = with(LocalDensity.current) { 8.dp.toPx() }
     fun movedEnough(c: Offset) = chain.lastOrNull()?.let { (c - it).getDistance() * zoom >= minMovePx } ?: true
@@ -962,7 +996,7 @@ fun JobScreen(store: JobStore, initial: Job, onBack: () -> Unit) {
                         onClick = {
                             val r = ratio ?: return@OutlinedButton
                             scope.launch {
-                                runCatching { withContext(Dispatchers.IO) { store.exportQuote(job, r) } }
+                                runCatching { withContext(Dispatchers.IO) { store.exportQuote(context, job, r) } }
                                     .onSuccess { uri ->
                                         val send = Intent(Intent.ACTION_SEND).setType(XLSX_MIME)
                                             .putExtra(Intent.EXTRA_STREAM, uri).putExtra(Intent.EXTRA_SUBJECT, job.name)

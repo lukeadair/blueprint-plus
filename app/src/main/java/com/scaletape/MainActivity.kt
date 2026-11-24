@@ -6,7 +6,10 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
@@ -25,12 +28,21 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        val store = JobStore(applicationContext)
+        val (opened, lost) = openStore(applicationContext)
         setContent {
             AppTheme {
+                var store by remember { mutableStateOf(opened) }
+                var notice by remember { mutableStateOf(lost) }
                 var openId by rememberSaveable { mutableStateOf<String?>(null) }
+                notice?.let {
+                    AlertDialog(
+                        onDismissRequest = { notice = null },
+                        confirmButton = { TextButton(onClick = { notice = null }) { Text("OK") } },
+                        text = { Text(it) },
+                    )
+                }
                 when (val id = openId) {
-                    null -> HomeScreen(store, onOpen = { openId = it })
+                    null -> HomeScreen(store, onStore = { store = it }, onOpen = { openId = it })
                     else -> key(id) {
                         val job = remember { store.load(id) }
                         if (job == null) LaunchedEffect(Unit) { openId = null } // deleted or unreadable

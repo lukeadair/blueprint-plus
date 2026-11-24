@@ -79,6 +79,8 @@ data class Job(
     val scaleSet: Boolean = true,
     /** The scale read from the plan when the job was made (null = none found); Job Config marks it "found in plan". */
     val foundScale: String? = null,
+    /** JSON keys this app doesn't read (the Mac's "roomColors"), each value as JSON text; written back unchanged. */
+    val unknownKeys: Map<String, String> = emptyMap(),
 ) {
     /**
      * Room [old] renamed to [to] (an existing room's name merges the two). Its runs move with it, marked
@@ -118,7 +120,13 @@ fun Job.toJson(): String = JSONObject()
     .put("editedPages", JSONArray(editedPages.sorted()))
     .put("scaleSet", scaleSet)
     .apply { if (foundScale != null) put("foundScale", foundScale) }
+    .apply { unknownKeys.forEach { (k, v) -> if (!has(k)) put(k, JSONArray(v).get(0)) } }
     .toString()
+
+private val KNOWN_KEYS = setOf(
+    "id", "name", "scale", "page", "updated", "created", "runs", "rooms", "boundaries",
+    "seededPages", "editedPages", "scaleSet", "foundScale",
+)
 
 fun jobFromJson(json: String): Job {
     val o = JSONObject(json)
@@ -160,5 +168,7 @@ fun jobFromJson(json: String): Job {
         editedPages = (0 until (editedArr?.length() ?: 0)).map { editedArr!!.getInt(it) }.toSet(),
         scaleSet = o.optBoolean("scaleSet", true), // older saves: already in use, don't prompt
         foundScale = if (o.has("foundScale")) o.getString("foundScale") else null,
+        // wrapped in an array so a bare string or number round-trips as JSON text
+        unknownKeys = o.keys().asSequence().filter { it !in KNOWN_KEYS }.associateWith { JSONArray().put(o.get(it)).toString() },
     )
 }
